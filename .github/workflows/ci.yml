@@ -84,4 +84,4 @@ jobs:
       - name: Run smoke tests
         env:
           LD_LIBRARY_PATH: ${{ env.KDUC_INSTALL_DIR }}/lib
-        run: ./.github/tests.sh "$TEST_IMG_DIR"
+        run: sh ./.github/tests.sh "$TEST_IMG_DIR"
