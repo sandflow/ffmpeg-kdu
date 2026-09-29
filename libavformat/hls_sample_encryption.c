@@ -28,6 +28,7 @@
 
 #include "libavutil/aes.h"
 #include "libavutil/channel_layout.h"
+#include "libavutil/mem.h"
 
 #include "hls_sample_encryption.h"
 
@@ -64,6 +65,7 @@ void ff_hls_senc_read_audio_setup_info(HLSAudioSetupInfo *info, const uint8_t *b
 
     info->codec_tag = AV_RL32(buf);
 
+    /* Always keep this list in sync with the one from hls_read_header() */
     if (info->codec_tag == MKTAG('z','a','a','c'))
         info->codec_id = AV_CODEC_ID_AAC;
     else if (info->codec_tag == MKTAG('z','a','c','3'))
@@ -86,6 +88,7 @@ void ff_hls_senc_read_audio_setup_info(HLSAudioSetupInfo *info, const uint8_t *b
         return;
 
     memcpy(info->setup_data, buf, info->setup_data_length);
+    memset(info->setup_data + info->setup_data_length, 0, AV_INPUT_BUFFER_PADDING_SIZE);
 }
 
 int ff_hls_senc_parse_audio_setup_info(AVStream *st, HLSAudioSetupInfo *info)
@@ -105,8 +108,7 @@ int ff_hls_senc_parse_audio_setup_info(AVStream *st, HLSAudioSetupInfo *info)
 
         ret = avpriv_ac3_parse_header(&ac3hdr, info->setup_data, info->setup_data_length);
         if (ret < 0) {
-            if (ret != AVERROR(ENOMEM))
-                av_free(ac3hdr);
+            av_free(ac3hdr);
             return ret;
         }
 
@@ -317,8 +319,7 @@ static int get_next_ac3_eac3_sync_frame(CodecParserContext *ctx, AudioFrame *fra
 
     ret = avpriv_ac3_parse_header(&hdr, frame->data, ctx->buf_end - frame->data);
     if (ret < 0) {
-        if (ret != AVERROR(ENOMEM))
-            av_free(hdr);
+        av_free(hdr);
         return ret;
     }
 
@@ -373,6 +374,13 @@ static int decrypt_audio_frame(enum AVCodecID codec_id, HLSCryptoContext *crypto
         ret = get_next_sync_frame(codec_id, &ctx, &frame);
         if (ret < 0)
             return ret;
+        if (frame.length < frame.header_length ||
+            frame.length > ctx.buf_end - frame.data) {
+            av_log(NULL, AV_LOG_ERROR,
+                   "Sample-AES: declared frame length %d exceeds packet data\n",
+                   frame.length);
+            return AVERROR_INVALIDDATA;
+        }
         if (frame.length - frame.header_length > 31) {
             ret = decrypt_sync_frame(codec_id, crypto_ctx, &frame);
             if (ret < 0)

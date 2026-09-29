@@ -24,13 +24,12 @@
  * VB Video decoder
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-
+#include "libavutil/attributes.h"
+#include "libavutil/mem.h"
 #include "avcodec.h"
 #include "bytestream.h"
 #include "codec_internal.h"
-#include "internal.h"
+#include "decode.h"
 
 enum VBFlags {
     VB_HAS_GMC     = 0x01,
@@ -161,6 +160,7 @@ static int vb_decode_framedata(VBDecContext *c, int offset)
                 break;
             case 1:
                 pattern = ~pattern;
+                av_fallthrough;
             case 2:
                 a = bytestream2_get_byte(&g);
                 for (y = 0; y < 4; y++)
@@ -233,7 +233,6 @@ static int decode_frame(AVCodecContext *avctx, AVFrame *frame,
     }
 
     memcpy(frame->data[1], c->pal, AVPALETTE_SIZE);
-    frame->palette_has_changed = flags & VB_HAS_PALETTE;
 
     outptr = frame->data[0];
     srcptr = c->frame;
@@ -280,7 +279,7 @@ static av_cold int decode_end(AVCodecContext *avctx)
 
 const FFCodec ff_vb_decoder = {
     .p.name         = "vb",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Beam Software VB"),
+    CODEC_LONG_NAME("Beam Software VB"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_VB,
     .priv_data_size = sizeof(VBDecContext),
@@ -288,5 +287,5 @@ const FFCodec ff_vb_decoder = {
     .close          = decode_end,
     FF_CODEC_DECODE_CB(decode_frame),
     .p.capabilities = AV_CODEC_CAP_DR1,
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP,
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
 };

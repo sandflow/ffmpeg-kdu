@@ -22,6 +22,8 @@
 #include "libavutil/channel_layout.h"
 #include "libavutil/intreadwrite.h"
 #include "avformat.h"
+#include "avio_internal.h"
+#include "demux.h"
 #include "internal.h"
 
 typedef struct GENHDemuxContext {
@@ -78,6 +80,8 @@ static int genh_read_header(AVFormatContext *s)
     case  0: st->codecpar->codec_id = AV_CODEC_ID_ADPCM_PSX;        break;
     case  1:
     case 11: st->codecpar->bits_per_coded_sample = 4;
+             if (st->codecpar->ch_layout.nb_channels > INT_MAX / 36)
+                return AVERROR_INVALIDDATA;
              st->codecpar->block_align = 36 * st->codecpar->ch_layout.nb_channels;
              st->codecpar->codec_id = AV_CODEC_ID_ADPCM_IMA_WAV;    break;
     case  2: st->codecpar->codec_id = AV_CODEC_ID_ADPCM_DTK;        break;
@@ -129,14 +133,18 @@ static int genh_read_header(AVFormatContext *s)
             return AVERROR_PATCHWELCOME;
         }
 
-        ff_alloc_extradata(st->codecpar, 32 * st->codecpar->ch_layout.nb_channels);
+        ret = ff_alloc_extradata(st->codecpar, 32 * st->codecpar->ch_layout.nb_channels);
+        if (ret < 0)
+            return ret;
         for (ch = 0; ch < st->codecpar->ch_layout.nb_channels; ch++) {
             if (coef_type & 1) {
                 avpriv_request_sample(s, "coef_type & 1");
                 return AVERROR_PATCHWELCOME;
             } else {
                 avio_seek(s->pb, coef[ch], SEEK_SET);
-                avio_read(s->pb, st->codecpar->extradata + 32 * ch, 32);
+                ret = ffio_read_size(s->pb, st->codecpar->extradata + 32 * ch, 32);
+                if (ret < 0)
+                    return ret;
             }
         }
 
@@ -169,6 +177,11 @@ static int genh_read_packet(AVFormatContext *s, AVPacket *pkt)
         par->ch_layout.nb_channels > 1) {
         int i, ch;
 
+        if (c->interleave_size != 2) {
+            avpriv_request_sample(s, "type1 THP interleave size %d", c->interleave_size);
+            return AVERROR_PATCHWELCOME;
+        }
+
         if (avio_feof(s->pb))
             return AVERROR_EOF;
         ret = av_new_packet(pkt, 8 * par->ch_layout.nb_channels);
@@ -193,12 +206,12 @@ static int genh_read_packet(AVFormatContext *s, AVPacket *pkt)
     return ret;
 }
 
-const AVInputFormat ff_genh_demuxer = {
-    .name           = "genh",
-    .long_name      = NULL_IF_CONFIG_SMALL("GENeric Header"),
+const FFInputFormat ff_genh_demuxer = {
+    .p.name         = "genh",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("GENeric Header"),
+    .p.extensions   = "genh",
     .priv_data_size = sizeof(GENHDemuxContext),
     .read_probe     = genh_probe,
     .read_header    = genh_read_header,
     .read_packet    = genh_read_packet,
-    .extensions     = "genh",
 };

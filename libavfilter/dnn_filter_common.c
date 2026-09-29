@@ -16,8 +16,12 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "config.h"
 #include "dnn_filter_common.h"
 #include "libavutil/avstring.h"
+#include "libavutil/mem.h"
+#include "libavutil/opt.h"
+#include "libavutil/hwcontext.h"
 
 #define MAX_SUPPORTED_OUTPUTS_NB 4
 
@@ -29,12 +33,15 @@ static char **separate_output_names(const char *expr, const char *val_sep, int *
         return NULL;
     }
 
-    parsed_vals = av_calloc(MAX_SUPPORTED_OUTPUTS_NB, sizeof(*parsed_vals));
+    parsed_vals = av_calloc(MAX_SUPPORTED_OUTPUTS_NB + 1, sizeof(*parsed_vals));
     if (!parsed_vals) {
         return NULL;
     }
 
     do {
+        if (val_num >= MAX_SUPPORTED_OUTPUTS_NB) {
+            goto err;
+        }
         val = av_get_token(&expr, val_sep);
         if(val) {
             parsed_vals[val_num] = val;
@@ -49,26 +56,71 @@ static char **separate_output_names(const char *expr, const char *val_sep, int *
     *separated_nb = val_num;
 
     return parsed_vals;
+
+err:
+    for (int i = 0; i < val_num; i++)
+        av_free(parsed_vals[i]);
+    av_freep(&parsed_vals);
+    return NULL;
+}
+
+typedef struct DnnFilterBase {
+    const AVClass *class;
+    DnnContext dnnctx;
+} DnnFilterBase;
+
+int ff_dnn_filter_init_child_class(AVFilterContext *filter) {
+    DnnFilterBase *base = filter->priv;
+    ff_dnn_init_child_class(&base->dnnctx);
+    return 0;
+}
+
+void *ff_dnn_filter_child_next(void *obj, void *prev)
+{
+    DnnFilterBase *base = obj;
+    return ff_dnn_child_next(&base->dnnctx, prev);
 }
 
 int ff_dnn_init(DnnContext *ctx, DNNFunctionType func_type, AVFilterContext *filter_ctx)
 {
+    DNNBackendType backend = ctx->backend_type;
+
     if (!ctx->model_filename) {
         av_log(filter_ctx, AV_LOG_ERROR, "model file for network is not specified\n");
         return AVERROR(EINVAL);
     }
-    if (!ctx->model_inputname) {
-        av_log(filter_ctx, AV_LOG_ERROR, "input name of the model network is not specified\n");
-        return AVERROR(EINVAL);
+
+    if (backend == DNN_TH) {
+        if (ctx->model_inputname)
+            av_log(filter_ctx, AV_LOG_WARNING, "LibTorch backend do not require inputname, "\
+                                               "inputname will be ignored.\n");
+        if (ctx->model_outputnames)
+            av_log(filter_ctx, AV_LOG_WARNING, "LibTorch backend do not require outputname(s), "\
+                                               "all outputname(s) will be ignored.\n");
+        ctx->nb_outputs = 1;
+    } else if (backend == DNN_TF) {
+        if (!ctx->model_inputname) {
+            av_log(filter_ctx, AV_LOG_ERROR, "input name of the model network is not specified\n");
+            return AVERROR(EINVAL);
+        }
+        ctx->model_outputnames = separate_output_names(ctx->model_outputnames_string, "&", &ctx->nb_outputs);
+        if (!ctx->model_outputnames) {
+            av_log(filter_ctx, AV_LOG_ERROR, "could not parse model output names\n");
+            return AVERROR(EINVAL);
+        }
+    } else if (backend == DNN_ONNX) {
+        /* ONNX: input and output tensor names are optional.
+         * Multiple output names may be specified separated by '&'. */
+        if (ctx->model_outputnames_string) {
+            ctx->model_outputnames = separate_output_names(ctx->model_outputnames_string, "&", &ctx->nb_outputs);
+            if (!ctx->model_outputnames) {
+                av_log(filter_ctx, AV_LOG_ERROR, "could not parse model output names\n");
+                return AVERROR(EINVAL);
+            }
+        }
     }
 
-    ctx->model_outputnames = separate_output_names(ctx->model_outputnames_string, "&", &ctx->nb_outputs);
-    if (!ctx->model_outputnames) {
-        av_log(filter_ctx, AV_LOG_ERROR, "could not parse model output names\n");
-        return AVERROR(EINVAL);
-    }
-
-    ctx->dnn_module = ff_get_dnn_module(ctx->backend_type);
+    ctx->dnn_module = ff_get_dnn_module(ctx->backend_type, filter_ctx);
     if (!ctx->dnn_module) {
         av_log(filter_ctx, AV_LOG_ERROR, "could not create DNN module for requested backend\n");
         return AVERROR(ENOMEM);
@@ -78,7 +130,25 @@ int ff_dnn_init(DnnContext *ctx, DNNFunctionType func_type, AVFilterContext *fil
         return AVERROR(EINVAL);
     }
 
-    ctx->model = (ctx->dnn_module->load_model)(ctx->model_filename, func_type, ctx->backend_options, filter_ctx);
+    if (ctx->backend_options) {
+        void *child = NULL;
+
+        av_log(filter_ctx, AV_LOG_WARNING,
+               "backend_configs is deprecated, please set backend options directly\n");
+        while (child = ff_dnn_child_next(ctx, child)) {
+            if (*(const AVClass **)child == &ctx->dnn_module->clazz) {
+                int ret = av_opt_set_from_string(child, ctx->backend_options,
+                                                 NULL, "=", "&");
+                if (ret < 0) {
+                    av_log(filter_ctx, AV_LOG_ERROR, "failed to parse options \"%s\"\n",
+                           ctx->backend_options);
+                    return ret;
+                }
+            }
+        }
+    }
+
+    ctx->model = (ctx->dnn_module->load_model)(ctx, func_type, filter_ctx);
     if (!ctx->model) {
         av_log(filter_ctx, AV_LOG_ERROR, "could not load DNN model\n");
         return AVERROR(EINVAL);
@@ -108,13 +178,15 @@ int ff_dnn_set_classify_post_proc(DnnContext *ctx, ClassifyPostProc post_proc)
 
 int ff_dnn_get_input(DnnContext *ctx, DNNData *input)
 {
-    return ctx->model->get_input(ctx->model->model, input, ctx->model_inputname);
+    return ctx->model->get_input(ctx->model, input, ctx->model_inputname);
 }
 
 int ff_dnn_get_output(DnnContext *ctx, int input_width, int input_height, int *output_width, int *output_height)
 {
-    return ctx->model->get_output(ctx->model->model, ctx->model_inputname, input_width, input_height,
-                                    (const char *)ctx->model_outputnames[0], output_width, output_height);
+    char * output_name = ctx->model_outputnames && ctx->backend_type != DNN_TH ?
+                         ctx->model_outputnames[0] : NULL;
+    return ctx->model->get_output(ctx->model, ctx->model_inputname, input_width, input_height,
+                                  (const char *)output_name, output_width, output_height);
 }
 
 int ff_dnn_execute_model(DnnContext *ctx, AVFrame *in_frame, AVFrame *out_frame)
@@ -158,6 +230,54 @@ void ff_dnn_uninit(DnnContext *ctx)
 {
     if (ctx->dnn_module) {
         (ctx->dnn_module->free_model)(&ctx->model);
-        av_freep(&ctx->dnn_module);
+    }
+    for (void *child = NULL; (child = ff_dnn_child_next(ctx, child));)
+        av_opt_free(child);
+    if (ctx->model_outputnames) {
+        for (int i = 0; i < ctx->nb_outputs; i++)
+            av_free(ctx->model_outputnames[i]);
+
+        av_freep(&ctx->model_outputnames);
     }
 }
+
+#if CONFIG_CUDA
+int ff_dnn_zero_copy_supported_cuda(DnnContext *ctx, const AVFilterLink *inlink)
+{
+    AVBufferRef *hw_frames_ref = avfilter_link_get_hw_frames_ctx((AVFilterLink *)inlink);
+    AVHWFramesContext *hw_frames_ctx;
+
+    if (!hw_frames_ref)
+        return 0;
+
+    hw_frames_ctx = (AVHWFramesContext *)hw_frames_ref->data;
+
+    if (inlink->format == AV_PIX_FMT_CUDA) {
+        if (ctx->batch_size > 1) {
+            av_log(inlink->dst, AV_LOG_ERROR, "CUDA zero-copy currently does not support batching.\n");
+            av_buffer_unref(&hw_frames_ref);
+            return AVERROR(EINVAL);
+        }
+
+        if (ctx->backend_type == DNN_TH) {
+            switch (hw_frames_ctx->sw_format) {
+            case AV_PIX_FMT_RGB24:
+            case AV_PIX_FMT_BGR24:
+            case AV_PIX_FMT_RGB0:
+            case AV_PIX_FMT_0RGB:
+            case AV_PIX_FMT_BGR0:
+            case AV_PIX_FMT_0BGR:
+                break;
+            default:
+                av_log(inlink->dst, AV_LOG_ERROR,
+                       "Zero-copy CUDA path currently only supports RGB24/BGR24 or RGB0/BGR0 variants.\n");
+                av_buffer_unref(&hw_frames_ref);
+                return AVERROR(EINVAL);
+            }
+        }
+    }
+
+    av_buffer_unref(&hw_frames_ref);
+    return 0;
+}
+#endif

@@ -394,13 +394,13 @@ static int gxf_header(AVFormatContext *s) {
         avio_skip(pb, map_len);
     if (!parse_packet_header(pb, &pkt_type, &len)) {
         av_log(s, AV_LOG_ERROR, "sync lost in header\n");
-        return -1;
+        return AVERROR_INVALIDDATA;
     }
     if (pkt_type == PKT_FLT) {
         gxf_read_index(s, len);
         if (!parse_packet_header(pb, &pkt_type, &len)) {
             av_log(s, AV_LOG_ERROR, "sync lost in header\n");
-            return -1;
+            return AVERROR_INVALIDDATA;
         }
     }
     if (pkt_type == PKT_UMF) {
@@ -508,7 +508,7 @@ static int gxf_packet(AVFormatContext *s, AVPacket *pkt) {
         if (!parse_packet_header(pb, &pkt_type, &pkt_len)) {
             if (!avio_feof(pb))
                 av_log(s, AV_LOG_ERROR, "sync lost\n");
-            return -1;
+            return AVERROR_INVALIDDATA;
         }
         if (pkt_type == PKT_FLT) {
             gxf_read_index(s, pkt_len);
@@ -599,9 +599,9 @@ static int64_t gxf_read_timestamp(AVFormatContext *s, int stream_index,
     return res;
 }
 
-const AVInputFormat ff_gxf_demuxer = {
-    .name           = "gxf",
-    .long_name      = NULL_IF_CONFIG_SMALL("GXF (General eXchange Format)"),
+const FFInputFormat ff_gxf_demuxer = {
+    .p.name         = "gxf",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("GXF (General eXchange Format)"),
     .priv_data_size = sizeof(struct gxf_stream_info),
     .read_probe     = gxf_probe,
     .read_header    = gxf_header,

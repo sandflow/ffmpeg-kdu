@@ -27,12 +27,14 @@
  */
 
 #include "libavutil/common.h"
+#include "libavutil/internal.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 
 #include "avcodec.h"
 #include "codec_internal.h"
-#include "internal.h"
+#include "decode.h"
+#include "thread.h"
 
 #include <kduc.h>
 
@@ -272,7 +274,7 @@ static int libkdu_decode_frame(AVCodecContext *avctx, AVFrame *frame, int *got_f
         goto done;
 
     // Initialize the output picture buffer
-    if ((ret = ff_get_buffer(avctx, frame, 0)) < 0)
+    if ((ret = ff_thread_get_buffer(avctx, frame, 0)) < 0)
         goto done;
 
 
@@ -332,7 +334,7 @@ static int libkdu_decode_frame(AVCodecContext *avctx, AVFrame *frame, int *got_f
     *got_frame = 1;
 
     frame->pict_type = AV_PICTURE_TYPE_I;
-    frame->key_frame = 1;
+    frame->flags |= AV_FRAME_FLAG_KEY;
 
     ret = buf_size;
 
@@ -363,13 +365,14 @@ static const AVClass kakadu_decoder_class = {
 
 const FFCodec ff_libkdu_decoder = {
     .p.name         = "libkdu",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Kakadu JPEG 2000 Decoder"),
+    CODEC_LONG_NAME("Kakadu JPEG 2000 Decoder"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_JPEG2000,
     .priv_data_size = sizeof(LibKduContext),
     .init           = libkdu_decode_init,
     FF_CODEC_DECODE_CB(libkdu_decode_frame),
-    .p.capabilities = AV_CODEC_CAP_DELAY | AV_CODEC_CAP_DR1,
+    .p.capabilities = AV_CODEC_CAP_DR1 |
+                      AV_CODEC_CAP_FRAME_THREADS,
     .p.priv_class   = &kakadu_decoder_class,
     .p.wrapper_name = "libkdu",
 };

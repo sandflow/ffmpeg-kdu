@@ -54,7 +54,7 @@ static void ac3_exponent_min_c(uint8_t *exp, int num_reuse_blocks, int nb_coefs)
     }
 }
 
-static void float_to_fixed24_c(int32_t *dst, const float *src, unsigned int len)
+static void float_to_fixed24_c(int32_t *dst, const float *src, size_t len)
 {
     const float scale = 1 << 24;
     do {
@@ -83,8 +83,16 @@ static void ac3_bit_alloc_calc_bap_c(int16_t *mask, int16_t *psd,
         return;
     }
 
-    bin  = start;
-    band = ff_ac3_bin_to_band_tab[start];
+    /* the first 28 bands have one coefficient each */
+    for (bin = start; bin < FFMIN(end, 28); bin++) {
+        int m = (FFMAX(mask[bin] - snr_offset - floor, 0) & 0x1FE0) + floor;
+        int address = av_clip_uintp2((psd[bin] - m) >> 5, 6);
+        bap[bin] = bap_tab[address];
+    }
+    if (bin >= end)
+        return;
+
+    band = ff_ac3_bin_to_band_tab[bin];
     do {
         int m = (FFMAX(mask[band] - snr_offset - floor, 0) & 0x1FE0) + floor;
         band_end = ff_ac3_band_start_tab[++band];
@@ -97,7 +105,7 @@ static void ac3_bit_alloc_calc_bap_c(int16_t *mask, int16_t *psd,
     } while (end > band_end);
 }
 
-static void ac3_update_bap_counts_c(uint16_t mant_cnt[16], uint8_t *bap,
+static void ac3_update_bap_counts_c(uint16_t mant_cnt[16], const uint8_t bap[],
                                     int len)
 {
     while (len-- > 0)
@@ -108,7 +116,7 @@ DECLARE_ALIGNED(16, const uint16_t, ff_ac3_bap_bits)[16] = {
     0,  0,  0,  3,  0,  4,  5,  6,  7,  8,  9, 10, 11, 12, 14, 16
 };
 
-static int ac3_compute_mantissa_size_c(uint16_t mant_cnt[6][16])
+static int ac3_compute_mantissa_size_c(const uint16_t mant_cnt[6][16])
 {
     int blk, bap;
     int bits = 0;
@@ -128,7 +136,7 @@ static int ac3_compute_mantissa_size_c(uint16_t mant_cnt[6][16])
     return bits;
 }
 
-static void ac3_extract_exponents_c(uint8_t *exp, int32_t *coef, int nb_coefs)
+static void ac3_extract_exponents_c(uint8_t *exp, const int32_t *coef, int nb_coefs)
 {
     int i;
 
@@ -363,8 +371,9 @@ void ff_ac3dsp_downmix(AC3DSPContext *c, float **samples, float **matrix,
             c->downmix = ac3_downmix_5_to_1_symmetric_c;
         }
 
-        if (ARCH_X86)
-            ff_ac3dsp_set_downmix_x86(c);
+#if ARCH_X86 && HAVE_X86ASM
+        ff_ac3dsp_set_downmix_x86(c);
+#endif
     }
 
     if (c->downmix)
@@ -373,7 +382,7 @@ void ff_ac3dsp_downmix(AC3DSPContext *c, float **samples, float **matrix,
         ac3_downmix_c(samples, matrix, out_ch, in_ch, len);
 }
 
-av_cold void ff_ac3dsp_init(AC3DSPContext *c, int bit_exact)
+av_cold void ff_ac3dsp_init(AC3DSPContext *c)
 {
     c->ac3_exponent_min = ac3_exponent_min_c;
     c->float_to_fixed24 = float_to_fixed24_c;
@@ -388,10 +397,15 @@ av_cold void ff_ac3dsp_init(AC3DSPContext *c, int bit_exact)
     c->downmix               = NULL;
     c->downmix_fixed         = NULL;
 
-    if (ARCH_ARM)
-        ff_ac3dsp_init_arm(c, bit_exact);
-    if (ARCH_X86)
-        ff_ac3dsp_init_x86(c, bit_exact);
-    if (ARCH_MIPS)
-        ff_ac3dsp_init_mips(c, bit_exact);
+#if ARCH_AARCH64
+    ff_ac3dsp_init_aarch64(c);
+#elif ARCH_ARM
+    ff_ac3dsp_init_arm(c);
+#elif ARCH_X86 && HAVE_X86ASM
+    ff_ac3dsp_init_x86(c);
+#elif ARCH_MIPS
+    ff_ac3dsp_init_mips(c);
+#elif ARCH_RISCV
+    ff_ac3dsp_init_riscv(c);
+#endif
 }

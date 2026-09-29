@@ -31,13 +31,7 @@
 #include "bsf_internal.h"
 #include "codec_desc.h"
 #include "codec_par.h"
-
-#define IS_EMPTY(pkt) (!(pkt)->data && !(pkt)->side_data_elems)
-
-static av_always_inline const FFBitStreamFilter *ff_bsf(const AVBitStreamFilter *bsf)
-{
-    return (const FFBitStreamFilter*)bsf;
-}
+#include "packet_internal.h"
 
 typedef struct FFBSFContext {
     AVBSFContext pub;
@@ -107,6 +101,9 @@ int av_bsf_alloc(const AVBitStreamFilter *filter, AVBSFContext **pctx)
     AVBSFContext *ctx;
     FFBSFContext *bsfi;
     int ret;
+
+    if (!ff_bsf(filter)->filter)
+        return AVERROR(ENOTSUP);
 
     bsfi = av_mallocz(sizeof(*bsfi));
     if (!bsfi)
@@ -205,7 +202,7 @@ int av_bsf_send_packet(AVBSFContext *ctx, AVPacket *pkt)
     FFBSFContext *const bsfi = ffbsfcontext(ctx);
     int ret;
 
-    if (!pkt || IS_EMPTY(pkt)) {
+    if (!pkt || AVPACKET_IS_EMPTY(pkt)) {
         if (pkt)
             av_packet_unref(pkt);
         bsfi->eof = 1;
@@ -217,7 +214,7 @@ int av_bsf_send_packet(AVBSFContext *ctx, AVPacket *pkt)
         return AVERROR(EINVAL);
     }
 
-    if (!IS_EMPTY(bsfi->buffer_pkt))
+    if (!AVPACKET_IS_EMPTY(bsfi->buffer_pkt))
         return AVERROR(EAGAIN);
 
     ret = av_packet_make_refcounted(pkt);
@@ -241,7 +238,7 @@ int ff_bsf_get_packet(AVBSFContext *ctx, AVPacket **pkt)
     if (bsfi->eof)
         return AVERROR_EOF;
 
-    if (IS_EMPTY(bsfi->buffer_pkt))
+    if (AVPACKET_IS_EMPTY(bsfi->buffer_pkt))
         return AVERROR(EAGAIN);
 
     tmp_pkt = av_packet_alloc();
@@ -261,7 +258,7 @@ int ff_bsf_get_packet_ref(AVBSFContext *ctx, AVPacket *pkt)
     if (bsfi->eof)
         return AVERROR_EOF;
 
-    if (IS_EMPTY(bsfi->buffer_pkt))
+    if (AVPACKET_IS_EMPTY(bsfi->buffer_pkt))
         return AVERROR(EAGAIN);
 
     av_packet_move_ref(pkt, bsfi->buffer_pkt);

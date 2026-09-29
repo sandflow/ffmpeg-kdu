@@ -21,6 +21,7 @@
 
 #include "libavutil/intreadwrite.h"
 #include "avformat.h"
+#include "avio_internal.h"
 #include "demux.h"
 #include "internal.h"
 
@@ -86,18 +87,23 @@ static int vpk_read_packet(AVFormatContext *s, AVPacket *pkt)
 
     vpk->current_block++;
     if (vpk->current_block == vpk->block_count) {
-        unsigned size = vpk->last_block_size / par->ch_layout.nb_channels;
-        unsigned skip = (par->block_align - vpk->last_block_size) / par->ch_layout.nb_channels;
-        uint64_t pos = avio_tell(s->pb);
+        unsigned size, skip;
+        uint64_t pos;
+
+        if (par->ch_layout.nb_channels <= 0)
+            return AVERROR_INVALIDDATA;
+        size = vpk->last_block_size / par->ch_layout.nb_channels;
+        skip = (par->block_align - vpk->last_block_size) / par->ch_layout.nb_channels;
+        pos = avio_tell(s->pb);
 
         ret = av_new_packet(pkt, vpk->last_block_size);
         if (ret < 0)
             return ret;
         for (i = 0; i < par->ch_layout.nb_channels; i++) {
-            ret = avio_read(s->pb, pkt->data + i * size, size);
+            ret = ffio_read_size(s->pb, pkt->data + i * size, size);
             avio_skip(s->pb, skip);
-            if (ret != size) {
-                return AVERROR(EIO);
+            if (ret < 0) {
+                return ret;
             }
         }
         pkt->pos = pos;
@@ -135,13 +141,13 @@ static int vpk_read_seek(AVFormatContext *s, int stream_index,
     return 0;
 }
 
-const AVInputFormat ff_vpk_demuxer = {
-    .name           = "vpk",
-    .long_name      = NULL_IF_CONFIG_SMALL("Sony PS2 VPK"),
+const FFInputFormat ff_vpk_demuxer = {
+    .p.name         = "vpk",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Sony PS2 VPK"),
+    .p.extensions   = "vpk",
     .priv_data_size = sizeof(VPKDemuxContext),
     .read_probe     = vpk_probe,
     .read_header    = vpk_read_header,
     .read_packet    = vpk_read_packet,
     .read_seek      = vpk_read_seek,
-    .extensions     = "vpk",
 };

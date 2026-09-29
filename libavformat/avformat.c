@@ -19,23 +19,30 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "config_components.h"
+
 #include <math.h>
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
 #include "libavutil/channel_layout.h"
-#include "libavutil/intreadwrite.h"
+#include "libavutil/frame.h"
+#include "libavutil/iamf.h"
 #include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixfmt.h"
 #include "libavutil/samplefmt.h"
 #include "libavcodec/avcodec.h"
+#include "libavcodec/codec.h"
 #include "libavcodec/bsf.h"
 #include "libavcodec/codec_desc.h"
-#include "libavcodec/packet_internal.h"
+#include "packet_internal.h"
 #include "avformat.h"
+#include "avformat_internal.h"
 #include "avio.h"
 #include "demux.h"
+#include "mux.h"
 #include "internal.h"
+#include "url.h"
 
 void ff_free_stream(AVStream **pst)
 {
@@ -45,19 +52,16 @@ void ff_free_stream(AVStream **pst)
     if (!st)
         return;
 
-    for (int i = 0; i < st->nb_side_data; i++)
-        av_freep(&st->side_data[i].data);
-    av_freep(&st->side_data);
-
     if (st->attached_pic.data)
         av_packet_unref(&st->attached_pic);
 
     av_parser_close(sti->parser);
     avcodec_free_context(&sti->avctx);
     av_bsf_free(&sti->bsfc);
-    av_freep(&sti->priv_pts);
     av_freep(&sti->index_entries);
     av_freep(&sti->probe_data.buf);
+
+    av_packet_free(&sti->parse_pkt);
 
     av_bsf_free(&sti->extract_extradata.bsf);
 
@@ -73,6 +77,48 @@ void ff_free_stream(AVStream **pst)
     av_freep(pst);
 }
 
+void ff_free_stream_group(AVStreamGroup **pstg)
+{
+    AVStreamGroup *stg = *pstg;
+
+    if (!stg)
+        return;
+
+    av_freep(&stg->streams);
+    av_dict_free(&stg->metadata);
+    av_freep(&stg->priv_data);
+    switch (stg->type) {
+    case AV_STREAM_GROUP_PARAMS_IAMF_AUDIO_ELEMENT: {
+        av_iamf_audio_element_free(&stg->params.iamf_audio_element);
+        break;
+    }
+    case AV_STREAM_GROUP_PARAMS_IAMF_MIX_PRESENTATION: {
+        av_iamf_mix_presentation_free(&stg->params.iamf_mix_presentation);
+        break;
+    }
+    case AV_STREAM_GROUP_PARAMS_TILE_GRID:
+        av_opt_free(stg->params.tile_grid);
+        av_freep(&stg->params.tile_grid->offsets);
+        av_packet_side_data_free(&stg->params.tile_grid->coded_side_data,
+                                 &stg->params.tile_grid->nb_coded_side_data);
+        av_freep(&stg->params.tile_grid);
+        break;
+    case AV_STREAM_GROUP_PARAMS_TREF:
+        av_opt_free(stg->params.tref);
+        av_freep(&stg->params.tref);
+        break;
+    case AV_STREAM_GROUP_PARAMS_LCEVC:
+    case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:
+        av_opt_free(stg->params.layered_video);
+        av_freep(&stg->params.layered_video);
+        break;
+    default:
+        break;
+    }
+
+    av_freep(pstg);
+}
+
 void ff_remove_stream(AVFormatContext *s, AVStream *st)
 {
     av_assert0(s->nb_streams>0);
@@ -81,27 +127,38 @@ void ff_remove_stream(AVFormatContext *s, AVStream *st)
     ff_free_stream(&s->streams[ --s->nb_streams ]);
 }
 
+void ff_remove_stream_group(AVFormatContext *s, AVStreamGroup *stg)
+{
+    av_assert0(s->nb_stream_groups > 0);
+    av_assert0(s->stream_groups[ s->nb_stream_groups - 1 ] == stg);
+
+    ff_free_stream_group(&s->stream_groups[ --s->nb_stream_groups ]);
+}
+
 /* XXX: suppress the packet queue */
 void ff_flush_packet_queue(AVFormatContext *s)
 {
-    FFFormatContext *const si = ffformatcontext(s);
-    avpriv_packet_list_free(&si->parse_queue);
-    avpriv_packet_list_free(&si->packet_buffer);
-    avpriv_packet_list_free(&si->raw_packet_buffer);
+    FormatContextInternal *const fci = ff_fc_internal(s);
+    FFFormatContext *const si = &fci->fc;
+    ff_packet_list_free(&fci->parse_queue);
+    ff_packet_list_free(&si->packet_buffer);
+    ff_packet_list_free(&fci->raw_packet_buffer);
 
-    si->raw_packet_buffer_size = 0;
+    fci->raw_packet_buffer_size = 0;
 }
 
 void avformat_free_context(AVFormatContext *s)
 {
+    FormatContextInternal *fci;
     FFFormatContext *si;
 
     if (!s)
         return;
-    si = ffformatcontext(s);
+    fci = ff_fc_internal(s);
+    si  = &fci->fc;
 
-    if (s->oformat && s->oformat->deinit && si->initialized)
-        s->oformat->deinit(s);
+    if (s->oformat && ffofmt(s->oformat)->deinit && fci->initialized)
+        ffofmt(s->oformat)->deinit(s);
 
     av_opt_free(s);
     if (s->iformat && s->iformat->priv_class && s->priv_data)
@@ -111,6 +168,9 @@ void avformat_free_context(AVFormatContext *s)
 
     for (unsigned i = 0; i < s->nb_streams; i++)
         ff_free_stream(&s->streams[i]);
+    for (unsigned i = 0; i < s->nb_stream_groups; i++)
+        ff_free_stream_group(&s->stream_groups[i]);
+    s->nb_stream_groups = 0;
     s->nb_streams = 0;
 
     for (unsigned i = 0; i < s->nb_programs; i++) {
@@ -129,110 +189,94 @@ void avformat_free_context(AVFormatContext *s)
     av_freep(&s->chapters);
     av_dict_free(&s->metadata);
     av_dict_free(&si->id3v2_meta);
+#if CONFIG_LIBCURL_PROTOCOL
+    ff_curl_loop_free(&si->curl_loop);
+#endif
     av_packet_free(&si->pkt);
     av_packet_free(&si->parse_pkt);
+    ff_packet_list_free(&si->packet_buffer);
     av_freep(&s->streams);
-    ff_flush_packet_queue(s);
+    av_freep(&s->stream_groups);
+    if (s->iformat)
+        ff_flush_packet_queue(s);
     av_freep(&s->url);
+    av_freep(&s->name);
     av_free(s);
 }
 
-uint8_t *av_stream_get_side_data(const AVStream *st,
-                                 enum AVPacketSideDataType type, size_t *size)
-{
-    for (int i = 0; i < st->nb_side_data; i++) {
-        if (st->side_data[i].type == type) {
-            if (size)
-                *size = st->side_data[i].size;
-            return st->side_data[i].data;
-        }
-    }
-    if (size)
-        *size = 0;
-    return NULL;
-}
-
-int av_stream_add_side_data(AVStream *st, enum AVPacketSideDataType type,
-                            uint8_t *data, size_t size)
-{
-    AVPacketSideData *sd, *tmp;
-
-    for (int i = 0; i < st->nb_side_data; i++) {
-        sd = &st->side_data[i];
-
-        if (sd->type == type) {
-            av_freep(&sd->data);
-            sd->data = data;
-            sd->size = size;
-            return 0;
-        }
-    }
-
-    if (st->nb_side_data + 1U > FFMIN(INT_MAX, SIZE_MAX / sizeof(*tmp)))
-        return AVERROR(ERANGE);
-
-    tmp = av_realloc_array(st->side_data, st->nb_side_data + 1, sizeof(*tmp));
-    if (!tmp) {
-        return AVERROR(ENOMEM);
-    }
-
-    st->side_data = tmp;
-    st->nb_side_data++;
-
-    sd = &st->side_data[st->nb_side_data - 1];
-    sd->type = type;
-    sd->data = data;
-    sd->size = size;
-
-    return 0;
-}
-
-uint8_t *av_stream_new_side_data(AVStream *st, enum AVPacketSideDataType type,
-                                 size_t size)
+/**
+ * Copy all stream parameters from source to destination stream, with the
+ * exception of the index field, which is usually set by avformat_new_stream().
+ *
+ * @param dst pointer to destination AVStream
+ * @param src pointer to source AVStream
+ * @return >=0 on success, AVERROR code on error
+ */
+static int stream_params_copy(AVStream *dst, const AVStream *src)
 {
     int ret;
-    uint8_t *data = av_malloc(size);
 
-    if (!data)
-        return NULL;
+    dst->id                  = src->id;
+    dst->time_base           = src->time_base;
+    dst->start_time          = src->start_time;
+    dst->duration            = src->duration;
+    dst->nb_frames           = src->nb_frames;
+    dst->disposition         = src->disposition;
+    dst->discard             = src->discard;
+    dst->sample_aspect_ratio = src->sample_aspect_ratio;
+    dst->avg_frame_rate      = src->avg_frame_rate;
+    dst->event_flags         = src->event_flags;
+    dst->r_frame_rate        = src->r_frame_rate;
+    dst->pts_wrap_bits       = src->pts_wrap_bits;
 
-    ret = av_stream_add_side_data(st, type, data, size);
-    if (ret < 0) {
-        av_freep(&data);
-        return NULL;
-    }
+    av_dict_free(&dst->metadata);
+    ret = av_dict_copy(&dst->metadata, src->metadata, 0);
+    if (ret < 0)
+        return ret;
 
-    return data;
-}
+    ret = avcodec_parameters_copy(dst->codecpar, src->codecpar);
+    if (ret < 0)
+        return ret;
 
-int ff_stream_side_data_copy(AVStream *dst, const AVStream *src)
-{
-    /* Free existing side data*/
-    for (int i = 0; i < dst->nb_side_data; i++)
-        av_free(dst->side_data[i].data);
-    av_freep(&dst->side_data);
-    dst->nb_side_data = 0;
-
-    /* Copy side data if present */
-    if (src->nb_side_data) {
-        dst->side_data = av_calloc(src->nb_side_data,
-                                   sizeof(*dst->side_data));
-        if (!dst->side_data)
-            return AVERROR(ENOMEM);
-        dst->nb_side_data = src->nb_side_data;
-
-        for (int i = 0; i < src->nb_side_data; i++) {
-            uint8_t *data = av_memdup(src->side_data[i].data,
-                                      src->side_data[i].size);
-            if (!data)
-                return AVERROR(ENOMEM);
-            dst->side_data[i].type = src->side_data[i].type;
-            dst->side_data[i].size = src->side_data[i].size;
-            dst->side_data[i].data = data;
-        }
+    av_packet_unref(&dst->attached_pic);
+    if (src->attached_pic.data) {
+        ret = av_packet_ref(&dst->attached_pic, &src->attached_pic);
+        if (ret < 0)
+            return ret;
     }
 
     return 0;
+}
+
+AVStream *ff_stream_clone(AVFormatContext *dst_ctx, const AVStream *src)
+{
+    AVStream *st;
+    int ret;
+
+    st = avformat_new_stream(dst_ctx, NULL);
+    if (!st)
+        return NULL;
+
+    ret = stream_params_copy(st, src);
+    if (ret < 0) {
+        ff_remove_stream(dst_ctx, st);
+        return NULL;
+    }
+
+    return st;
+}
+
+const char *avformat_stream_group_name(enum AVStreamGroupParamsType type)
+{
+    switch(type) {
+    case AV_STREAM_GROUP_PARAMS_IAMF_AUDIO_ELEMENT:        return "IAMF Audio Element";
+    case AV_STREAM_GROUP_PARAMS_IAMF_MIX_PRESENTATION:     return "IAMF Mix Presentation";
+    case AV_STREAM_GROUP_PARAMS_TILE_GRID:                 return "Tile Grid";
+    case AV_STREAM_GROUP_PARAMS_LCEVC:                     return "LCEVC (Split video and enhancement)";
+    case AV_STREAM_GROUP_PARAMS_TREF:                      return "Track Reference";
+    case AV_STREAM_GROUP_PARAMS_DOLBY_VISION:              return "Dolby Vision (Split base and enhancement layer)";
+    }
+    return NULL;
 }
 
 AVProgram *av_new_program(AVFormatContext *ac, int id)
@@ -266,14 +310,14 @@ AVProgram *av_new_program(AVFormatContext *ac, int id)
     return program;
 }
 
-void av_program_add_stream_index(AVFormatContext *ac, int progid, unsigned idx)
+int av_program_add_stream_index2(AVFormatContext *ac, int progid, unsigned idx)
 {
     AVProgram *program = NULL;
     void *tmp;
 
     if (idx >= ac->nb_streams) {
-        av_log(ac, AV_LOG_ERROR, "stream index %d is not valid\n", idx);
-        return;
+        av_log(ac, AV_LOG_ERROR, "stream index %d is greater than stream count %d\n", idx, ac->nb_streams);
+        return AVERROR(EINVAL);
     }
 
     for (unsigned i = 0; i < ac->nb_programs; i++) {
@@ -282,15 +326,129 @@ void av_program_add_stream_index(AVFormatContext *ac, int progid, unsigned idx)
         program = ac->programs[i];
         for (unsigned j = 0; j < program->nb_stream_indexes; j++)
             if (program->stream_index[j] == idx)
-                return;
+                return 0;
 
         tmp = av_realloc_array(program->stream_index, program->nb_stream_indexes+1, sizeof(unsigned int));
         if (!tmp)
-            return;
+            return AVERROR(ENOMEM);
         program->stream_index = tmp;
         program->stream_index[program->nb_stream_indexes++] = idx;
-        return;
+        return 0;
     }
+
+    av_log(ac, AV_LOG_ERROR, "no program with id %d found\n", progid);
+    return AVERROR(EINVAL);
+}
+
+void av_program_add_stream_index(AVFormatContext *ac, int progid, unsigned idx)
+{
+    av_program_add_stream_index2(ac, progid, idx);
+    return;
+}
+
+int av_program_copy(AVFormatContext *dst, const AVFormatContext *src, int progid, int flags)
+{
+    const AVProgram *src_prog = NULL;
+    AVProgram *dst_prog = NULL;
+    int ret, idx = -1, match = -1;
+    int overwrite = flags & AVFMT_PROGCOPY_OVERWRITE;
+
+    if ((flags & AVFMT_PROGCOPY_MATCH_BY_ID) && (flags & AVFMT_PROGCOPY_MATCH_BY_INDEX))
+        return AVERROR(EINVAL);
+    else if (flags & AVFMT_PROGCOPY_MATCH_BY_ID)
+        match = 0;
+    else if (flags & AVFMT_PROGCOPY_MATCH_BY_INDEX)
+        match = 1;
+
+    for (unsigned i = 0; i < src->nb_programs; i++) {
+        if (src->programs[i]->id == progid) {
+            if (src_prog) {
+                av_log(dst, AV_LOG_ERROR, "multiple programs found in source with same id 0x%04x. Not copying.\n", progid);
+                return AVERROR(EINVAL);
+            } else {
+                src_prog = src->programs[i];
+            }
+        }
+    }
+
+    if (!src_prog) {
+        av_log(dst, AV_LOG_ERROR, "source program not found: id=0x%04x\n", progid);
+        return AVERROR(EINVAL);
+    }
+
+    for (unsigned i = 0; i < dst->nb_programs; i++) {
+        if (dst->programs[i]->id == progid) {
+            if (idx > -1) {
+                av_log(dst, AV_LOG_ERROR, "multiple programs found in target with same id 0x%04x. Not copying.\n", progid);
+                return AVERROR(EINVAL);
+            } else {
+                idx = i;
+            }
+        }
+    }
+
+    if (idx >= 0 && !overwrite)
+        return AVERROR(EEXIST);
+
+    av_log(dst, AV_LOG_TRACE, "%s program: id=0x%04x\n", idx >= 0 ? "overwriting" : "copying", progid);
+
+    if (idx >= 0) {
+        dst_prog = dst->programs[idx];
+        av_dict_free(&dst_prog->metadata);
+        av_freep(&dst_prog->stream_index);
+        dst_prog->nb_stream_indexes = 0;
+    } else {
+        dst_prog = av_new_program(dst, progid);
+        if (!dst_prog)
+            return AVERROR(ENOMEM);
+    }
+
+    /* public fields */
+    dst_prog->id          = src_prog->id;
+    dst_prog->flags       = src_prog->flags;
+    dst_prog->discard     = src_prog->discard;
+    dst_prog->program_num = src_prog->program_num;
+    dst_prog->pmt_pid     = src_prog->pmt_pid;
+    dst_prog->pcr_pid     = src_prog->pcr_pid;
+    dst_prog->pmt_version = src_prog->pmt_version;
+
+    if (match == -1 && src->nb_streams) {
+        match = 0;
+        for (unsigned i = 0; i < src->nb_streams && !match; i++) {
+            int src_id = src->streams[i]->id;
+            if (!src_id) {
+                match = 1;
+                break;
+            }
+            for (unsigned j=i+1; j < src->nb_streams; j++) {
+                int sib_id = src->streams[j]->id;
+                if (src_id == sib_id) {
+                    match = 1;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (unsigned i = 0; i < dst->nb_streams; i++) {
+        int dst_val = match ? i : dst->streams[i]->id;
+
+        for (unsigned j = 0; j < src_prog->nb_stream_indexes; j++) {
+            int src_val = match ? src_prog->stream_index[j] : src->streams[src_prog->stream_index[j]]->id;
+
+            if (dst_val == src_val) {
+                ret = av_program_add_stream_index2(dst, dst_prog->id, i);
+                if (ret < 0)
+                    return ret;
+            }
+        }
+    }
+
+    ret = av_dict_copy(&dst_prog->metadata, src_prog->metadata, 0);
+    if (ret < 0)
+        return ret;
+
+    return 0;
 }
 
 AVProgram *av_find_program_from_stream(AVFormatContext *ic, AVProgram *last, int s)
@@ -368,7 +526,10 @@ int av_find_best_stream(AVFormatContext *ic, enum AVMediaType type,
         int real_stream_index = program ? program[i] : i;
         AVStream *st          = ic->streams[real_stream_index];
         AVCodecParameters *par = st->codecpar;
+        const AVCodecDescriptor *desc = avcodec_descriptor_get(par->codec_id);
         if (par->codec_type != type)
+            continue;
+        if (desc && (desc->props & AV_CODEC_PROP_ENHANCEMENT))
             continue;
         if (wanted_stream_nb >= 0 && real_stream_index != wanted_stream_nb)
             continue;
@@ -421,7 +582,7 @@ int av_find_best_stream(AVFormatContext *ic, enum AVMediaType type,
  */
 static int match_stream_specifier(const AVFormatContext *s, const AVStream *st,
                                   const char *spec, const char **indexptr,
-                                  const AVProgram **p)
+                                  const AVStreamGroup **g, const AVProgram **p)
 {
     int match = 1;                      /* Stores if the specifier matches so far. */
     while (*spec) {
@@ -449,6 +610,46 @@ static int match_stream_specifier(const AVFormatContext *s, const AVStream *st,
             if (type != st->codecpar->codec_type)
                 match = 0;
             if (nopic && (st->disposition & AV_DISPOSITION_ATTACHED_PIC))
+                match = 0;
+        } else if (*spec == 'g' && *(spec + 1) == ':') {
+            int64_t group_idx = -1, group_id = -1;
+            int found = 0;
+            char *endptr;
+            spec += 2;
+            if (*spec == '#' || (*spec == 'i' && *(spec + 1) == ':')) {
+                spec += 1 + (*spec == 'i');
+                group_id = strtol(spec, &endptr, 0);
+                if (spec == endptr || (*endptr && *endptr++ != ':'))
+                    return AVERROR(EINVAL);
+                spec = endptr;
+            } else {
+                group_idx = strtol(spec, &endptr, 0);
+                /* Disallow empty id and make sure that if we are not at the end, then another specifier must follow. */
+                if (spec == endptr || (*endptr && *endptr++ != ':'))
+                    return AVERROR(EINVAL);
+                spec = endptr;
+            }
+            if (match) {
+                if (group_id > 0) {
+                    for (unsigned i = 0; i < s->nb_stream_groups; i++) {
+                        if (group_id == s->stream_groups[i]->id) {
+                            group_idx = i;
+                            break;
+                        }
+                    }
+                }
+                if (group_idx < 0 || group_idx >= s->nb_stream_groups)
+                    return AVERROR(EINVAL);
+                for (unsigned j = 0; j < s->stream_groups[group_idx]->nb_streams; j++) {
+                    if (st->index == s->stream_groups[group_idx]->streams[j]->index) {
+                        found = 1;
+                        if (g)
+                            *g = s->stream_groups[group_idx];
+                        break;
+                    }
+                }
+            }
+            if (!found)
                 match = 0;
         } else if (*spec == 'p' && *(spec + 1) == ':') {
             int prog_id;
@@ -489,14 +690,13 @@ static int match_stream_specifier(const AVFormatContext *s, const AVStream *st,
             return match && (stream_id == st->id);
         } else if (*spec == 'm' && *(spec + 1) == ':') {
             const AVDictionaryEntry *tag;
-            char *key, *val;
             int ret;
 
             if (match) {
                 spec += 2;
-                val = strchr(spec, ':');
+                const char *val = strchr(spec, ':');
 
-                key = val ? av_strndup(spec, val - spec) : av_strdup(spec);
+                char *key = val ? av_strndup(spec, val - spec) : av_strdup(spec);
                 if (!key)
                     return AVERROR(ENOMEM);
 
@@ -548,10 +748,11 @@ int avformat_match_stream_specifier(AVFormatContext *s, AVStream *st,
     int ret, index;
     char *endptr;
     const char *indexptr = NULL;
+    const AVStreamGroup *g = NULL;
     const AVProgram *p = NULL;
     int nb_streams;
 
-    ret = match_stream_specifier(s, st, spec, &indexptr, &p);
+    ret = match_stream_specifier(s, st, spec, &indexptr, &g, &p);
     if (ret < 0)
         goto error;
 
@@ -569,10 +770,11 @@ int avformat_match_stream_specifier(AVFormatContext *s, AVStream *st,
         return (index == st->index);
 
     /* If we requested a matching stream index, we have to ensure st is that. */
-    nb_streams = p ? p->nb_stream_indexes : s->nb_streams;
+    nb_streams = g ? g->nb_streams : (p ? p->nb_stream_indexes : s->nb_streams);
     for (int i = 0; i < nb_streams && index >= 0; i++) {
-        const AVStream *candidate = s->streams[p ? p->stream_index[i] : i];
-        ret = match_stream_specifier(s, candidate, spec, NULL, NULL);
+        unsigned idx = g ? g->streams[i]->index : (p ? p->stream_index[i] : i);
+        const AVStream *candidate = s->streams[idx];
+        ret = match_stream_specifier(s, candidate, spec, NULL, NULL, NULL);
         if (ret < 0)
             goto error;
         if (ret > 0 && index-- == 0 && st == candidate)
@@ -612,8 +814,7 @@ AVRational av_guess_sample_aspect_ratio(AVFormatContext *format, AVStream *strea
 AVRational av_guess_frame_rate(AVFormatContext *format, AVStream *st, AVFrame *frame)
 {
     AVRational fr = st->r_frame_rate;
-    AVCodecContext *const avctx = ffstream(st)->avctx;
-    AVRational codec_fr = avctx->framerate;
+    const AVCodecDescriptor *desc = cffstream(st)->codec_desc;
     AVRational   avg_fr = st->avg_frame_rate;
 
     if (avg_fr.num > 0 && avg_fr.den > 0 && fr.num > 0 && fr.den > 0 &&
@@ -621,77 +822,16 @@ AVRational av_guess_frame_rate(AVFormatContext *format, AVStream *st, AVFrame *f
         fr = avg_fr;
     }
 
-    if (avctx->ticks_per_frame > 1) {
+    if (desc && (desc->props & AV_CODEC_PROP_FIELDS)) {
+        const AVCodecContext *const avctx = ffstream(st)->avctx;
+        AVRational codec_fr = avctx->framerate;
+
         if (   codec_fr.num > 0 && codec_fr.den > 0 &&
             (fr.num == 0 || av_q2d(codec_fr) < av_q2d(fr)*0.7 && fabs(1.0 - av_q2d(av_div_q(avg_fr, fr))) > 0.1))
             fr = codec_fr;
     }
 
     return fr;
-}
-
-int avformat_transfer_internal_stream_timing_info(const AVOutputFormat *ofmt,
-                                                  AVStream *ost, const AVStream *ist,
-                                                  enum AVTimebaseSource copy_tb)
-{
-    const AVCodecContext *const dec_ctx = cffstream(ist)->avctx;
-    AVCodecContext       *const enc_ctx =  ffstream(ost)->avctx;
-
-    enc_ctx->time_base = ist->time_base;
-    /*
-     * Avi is a special case here because it supports variable fps but
-     * having the fps and timebase differe significantly adds quite some
-     * overhead
-     */
-    if (!strcmp(ofmt->name, "avi")) {
-#if FF_API_R_FRAME_RATE
-        if (copy_tb == AVFMT_TBCF_AUTO && ist->r_frame_rate.num
-            && av_q2d(ist->r_frame_rate) >= av_q2d(ist->avg_frame_rate)
-            && 0.5/av_q2d(ist->r_frame_rate) > av_q2d(ist->time_base)
-            && 0.5/av_q2d(ist->r_frame_rate) > av_q2d(dec_ctx->time_base)
-            && av_q2d(ist->time_base) < 1.0/500 && av_q2d(dec_ctx->time_base) < 1.0/500
-            || copy_tb == AVFMT_TBCF_R_FRAMERATE) {
-            enc_ctx->time_base.num = ist->r_frame_rate.den;
-            enc_ctx->time_base.den = 2*ist->r_frame_rate.num;
-            enc_ctx->ticks_per_frame = 2;
-        } else
-#endif
-            if (copy_tb == AVFMT_TBCF_AUTO && av_q2d(dec_ctx->time_base)*dec_ctx->ticks_per_frame > 2*av_q2d(ist->time_base)
-                   && av_q2d(ist->time_base) < 1.0/500
-                   || copy_tb == AVFMT_TBCF_DECODER) {
-            enc_ctx->time_base = dec_ctx->time_base;
-            enc_ctx->time_base.num *= dec_ctx->ticks_per_frame;
-            enc_ctx->time_base.den *= 2;
-            enc_ctx->ticks_per_frame = 2;
-        }
-    } else if (!(ofmt->flags & AVFMT_VARIABLE_FPS)
-               && !av_match_name(ofmt->name, "mov,mp4,3gp,3g2,psp,ipod,ismv,f4v")) {
-        if (copy_tb == AVFMT_TBCF_AUTO && dec_ctx->time_base.den
-            && av_q2d(dec_ctx->time_base)*dec_ctx->ticks_per_frame > av_q2d(ist->time_base)
-            && av_q2d(ist->time_base) < 1.0/500
-            || copy_tb == AVFMT_TBCF_DECODER) {
-            enc_ctx->time_base = dec_ctx->time_base;
-            enc_ctx->time_base.num *= dec_ctx->ticks_per_frame;
-        }
-    }
-
-    if ((enc_ctx->codec_tag == AV_RL32("tmcd") || ost->codecpar->codec_tag == AV_RL32("tmcd"))
-        && dec_ctx->time_base.num < dec_ctx->time_base.den
-        && dec_ctx->time_base.num > 0
-        && 121LL*dec_ctx->time_base.num > dec_ctx->time_base.den) {
-        enc_ctx->time_base = dec_ctx->time_base;
-    }
-
-    av_reduce(&enc_ctx->time_base.num, &enc_ctx->time_base.den,
-              enc_ctx->time_base.num, enc_ctx->time_base.den, INT_MAX);
-
-    return 0;
-}
-
-AVRational av_stream_get_codec_timebase(const AVStream *st)
-{
-    // See avformat_transfer_internal_stream_timing_info() TODO.
-    return cffstream(st)->avctx->time_base;
 }
 
 void avpriv_set_pts_info(AVStream *st, int pts_wrap_bits,
@@ -716,7 +856,8 @@ void avpriv_set_pts_info(AVStream *st, int pts_wrap_bits,
         return;
     }
     st->time_base     = new_tb;
-    sti->avctx->pkt_timebase = new_tb;
+    if (sti->avctx)
+        sti->avctx->pkt_timebase = new_tb;
     st->pts_wrap_bits = pts_wrap_bits;
 }
 
@@ -740,21 +881,34 @@ const AVCodec *ff_find_decoder(AVFormatContext *s, const AVStream *st,
 
 int ff_copy_whiteblacklists(AVFormatContext *dst, const AVFormatContext *src)
 {
+#define OFF(field) offsetof(AVFormatContext, field)
+    static const unsigned offsets[] = {
+        OFF(codec_whitelist),    OFF(format_whitelist),
+        OFF(protocol_whitelist), OFF(protocol_blacklist),
+    };
+#undef OFF
     av_assert0(!dst->codec_whitelist &&
                !dst->format_whitelist &&
                !dst->protocol_whitelist &&
                !dst->protocol_blacklist);
-    dst-> codec_whitelist = av_strdup(src->codec_whitelist);
-    dst->format_whitelist = av_strdup(src->format_whitelist);
-    dst->protocol_whitelist = av_strdup(src->protocol_whitelist);
-    dst->protocol_blacklist = av_strdup(src->protocol_blacklist);
-    if (   (src-> codec_whitelist && !dst-> codec_whitelist)
-        || (src->  format_whitelist && !dst->  format_whitelist)
-        || (src->protocol_whitelist && !dst->protocol_whitelist)
-        || (src->protocol_blacklist && !dst->protocol_blacklist)) {
-        av_log(dst, AV_LOG_ERROR, "Failed to duplicate black/whitelist\n");
-        return AVERROR(ENOMEM);
+    for (unsigned i = 0; i < FF_ARRAY_ELEMS(offsets); i++) {
+        const char *src_str = *(char *const*)((const char*)src + offsets[i]);
+
+        if (src_str) {
+            char *dst_str = av_strdup(src_str);
+            if (!dst_str) {
+                av_log(dst, AV_LOG_ERROR, "Failed to duplicate black/whitelist\n");
+                return AVERROR(ENOMEM);
+            }
+
+            *(char **)((char*)dst + offsets[i]) = dst_str;
+        }
     }
+    if (src->recursion_limit <= 0) {
+        av_log(dst, AV_LOG_ERROR, "Too deep recursion\n");
+        return AVERROR_INVALIDDATA;
+    }
+    dst->recursion_limit = src->recursion_limit - 1;
     return 0;
 }
 
@@ -776,15 +930,42 @@ void ff_format_set_url(AVFormatContext *s, char *url)
     s->url = url;
 }
 
+int ff_format_check_set_url(AVFormatContext *s, const char *url)
+{
+    URLComponents uc;
+    av_assert0(url);
+    char proto[64];
+
+    int ret = ff_url_decompose(&uc, url, NULL);
+    if (ret < 0)
+        return ret;
+    av_strlcpy(proto, uc.scheme, FFMIN(sizeof(proto), uc.url_component_end_scheme - uc.scheme));
+
+    if (s->protocol_whitelist && av_match_list(proto, s->protocol_whitelist, ',') <= 0) {
+        av_log(s, AV_LOG_ERROR, "Protocol '%s' not on whitelist '%s'!\n", proto, s->protocol_whitelist);
+        return AVERROR(EINVAL);
+    }
+
+    if (s->protocol_blacklist && av_match_list(proto, s->protocol_blacklist, ',') > 0) {
+        av_log(s, AV_LOG_ERROR, "Protocol '%s' on blacklist '%s'!\n", proto, s->protocol_blacklist);
+        return AVERROR(EINVAL);
+    }
+
+    char *urldup = av_strdup(url);
+    if (!urldup)
+        return AVERROR(ENOMEM);
+
+    av_freep(&s->url);
+    s->url = urldup;
+    return 0;
+}
+
+
 int ff_format_io_close(AVFormatContext *s, AVIOContext **pb)
 {
     int ret = 0;
-    if (*pb) {
-        if (s->io_close == ff_format_io_close_default || s->io_close == NULL)
-            ret = s->io_close2(s, *pb);
-        else
-            s->io_close(s, *pb);
-    }
+    if (*pb)
+        ret = s->io_close2(s, *pb);
     *pb = NULL;
     return ret;
 }

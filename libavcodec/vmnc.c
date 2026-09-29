@@ -25,14 +25,12 @@
  * As Alex Beregszaszi discovered, this is effectively RFB data dump
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-
+#include "libavutil/attributes.h"
 #include "libavutil/common.h"
-#include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "avcodec.h"
 #include "codec_internal.h"
-#include "internal.h"
+#include "decode.h"
 #include "bytestream.h"
 
 enum EncTypes {
@@ -343,7 +341,7 @@ static int decode_frame(AVCodecContext *avctx, AVFrame *rframe,
     if ((ret = ff_reget_buffer(avctx, c->pic, 0)) < 0)
         return ret;
 
-    c->pic->key_frame = 0;
+    c->pic->flags &= ~AV_FRAME_FLAG_KEY;
     c->pic->pict_type = AV_PICTURE_TYPE_P;
 
     // restore screen after cursor
@@ -445,7 +443,7 @@ static int decode_frame(AVCodecContext *avctx, AVFrame *rframe,
             bytestream2_skip(gb, 4);
             break;
         case MAGIC_WMVi: // ServerInitialization struct
-            c->pic->key_frame = 1;
+            c->pic->flags |= AV_FRAME_FLAG_KEY;
             c->pic->pict_type = AV_PICTURE_TYPE_I;
             depth = bytestream2_get_byte(gb);
             if (depth != c->bpp) {
@@ -545,6 +543,7 @@ static av_cold int decode_init(AVCodecContext *avctx)
         /* 24 bits is not technically supported, but some clients might
          * mistakenly set it, so let's assume they actually meant 32 bits */
         c->bpp = 32;
+        av_fallthrough;
     case 32:
         avctx->pix_fmt = AV_PIX_FMT_0RGB32;
         break;
@@ -575,7 +574,7 @@ static av_cold int decode_end(AVCodecContext *avctx)
 
 const FFCodec ff_vmnc_decoder = {
     .p.name         = "vmnc",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("VMware Screen Codec / VMware Video"),
+    CODEC_LONG_NAME("VMware Screen Codec / VMware Video"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_VMNC,
     .priv_data_size = sizeof(VmncContext),
@@ -583,5 +582,4 @@ const FFCodec ff_vmnc_decoder = {
     .close          = decode_end,
     FF_CODEC_DECODE_CB(decode_frame),
     .p.capabilities = AV_CODEC_CAP_DR1,
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };

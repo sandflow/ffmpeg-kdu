@@ -19,8 +19,10 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/attributes.h"
 #include "libavutil/intreadwrite.h"
 #include "avformat.h"
+#include "demux.h"
 #include "riff.h"
 
 static int lvf_probe(const AVProbeData *p)
@@ -119,6 +121,7 @@ static int lvf_read_packet(AVFormatContext *s, AVPacket *pkt)
         switch (id) {
         case MKTAG('0', '0', 'd', 'c'):
             is_video = 1;
+            av_fallthrough;
         case MKTAG('0', '1', 'w', 'b'):
             if (size < 8)
                 return AVERROR_INVALIDDATA;
@@ -145,12 +148,12 @@ static int lvf_read_packet(AVFormatContext *s, AVPacket *pkt)
     return AVERROR_EOF;
 }
 
-const AVInputFormat ff_lvf_demuxer = {
-    .name        = "lvf",
-    .long_name   = NULL_IF_CONFIG_SMALL("LVF"),
+const FFInputFormat ff_lvf_demuxer = {
+    .p.name         = "lvf",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("LVF"),
+    .p.extensions   = "lvf",
+    .p.flags        = AVFMT_GENERIC_INDEX,
     .read_probe  = lvf_probe,
     .read_header = lvf_read_header,
     .read_packet = lvf_read_packet,
-    .extensions  = "lvf",
-    .flags       = AVFMT_GENERIC_INDEX,
 };

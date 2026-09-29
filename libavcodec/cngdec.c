@@ -23,10 +23,11 @@
 
 #include "libavutil/common.h"
 #include "libavutil/ffmath.h"
-#include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "avcodec.h"
 #include "celp_filters.h"
 #include "codec_internal.h"
+#include "decode.h"
 #include "internal.h"
 #include "libavutil/lfg.h"
 
@@ -96,7 +97,7 @@ static void make_lpc_coefs(float *lpc, const float *refl, int order)
         memcpy(lpc, cur, sizeof(*lpc) * order);
 }
 
-static void cng_decode_flush(AVCodecContext *avctx)
+static av_cold void cng_decode_flush(AVCodecContext *avctx)
 {
     CNGContext *p = avctx->priv_data;
     p->inited = 0;
@@ -152,8 +153,10 @@ static int cng_decode_frame(AVCodecContext *avctx, AVFrame *frame,
     if ((ret = ff_get_buffer(avctx, frame, 0)) < 0)
         return ret;
     buf_out = (int16_t *)frame->data[0];
-    for (i = 0; i < avctx->frame_size; i++)
-        buf_out[i] = av_clip_int16(p->filter_out[i + p->order]);
+    for (i = 0; i < avctx->frame_size; i++) {
+        const float f = p->filter_out[i + p->order];
+        buf_out[i] = !isfinite(f) ? 0 : av_clipf(f, INT16_MIN, INT16_MAX);
+    }
     memcpy(p->filter_out, p->filter_out + avctx->frame_size,
            p->order * sizeof(*p->filter_out));
 
@@ -164,7 +167,7 @@ static int cng_decode_frame(AVCodecContext *avctx, AVFrame *frame,
 
 const FFCodec ff_comfortnoise_decoder = {
     .p.name         = "comfortnoise",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("RFC 3389 comfort noise generator"),
+    CODEC_LONG_NAME("RFC 3389 comfort noise generator"),
     .p.type         = AVMEDIA_TYPE_AUDIO,
     .p.id           = AV_CODEC_ID_COMFORT_NOISE,
     .priv_data_size = sizeof(CNGContext),
@@ -172,9 +175,6 @@ const FFCodec ff_comfortnoise_decoder = {
     FF_CODEC_DECODE_CB(cng_decode_frame),
     .flush          = cng_decode_flush,
     .close          = cng_decode_close,
-    .p.sample_fmts  = (const enum AVSampleFormat[]){ AV_SAMPLE_FMT_S16,
-                                                     AV_SAMPLE_FMT_NONE },
     .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_CHANNEL_CONF,
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE |
-                      FF_CODEC_CAP_INIT_CLEANUP,
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
 };

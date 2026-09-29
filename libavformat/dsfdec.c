@@ -22,6 +22,7 @@
 #include "libavutil/channel_layout.h"
 #include "libavutil/intreadwrite.h"
 #include "avformat.h"
+#include "demux.h"
 #include "internal.h"
 #include "id3v2.h"
 
@@ -129,6 +130,7 @@ static int dsf_read_header(AVFormatContext *s)
         avpriv_request_sample(s, "unknown most significant bit");
         return AVERROR_INVALIDDATA;
     }
+    st->codecpar->format = AV_SAMPLE_FMT_DSD;
 
     dsf->audio_size = avio_rl64(pb) / 8 * st->codecpar->ch_layout.nb_channels;
     st->codecpar->block_align = avio_rl32(pb);
@@ -174,7 +176,7 @@ static int dsf_read_packet(AVFormatContext *s, AVPacket *pkt)
             int64_t packet_size = dsf->audio_size - data_pos;
             int64_t skip_size = dsf->data_size - data_pos - packet_size;
             uint8_t *dst;
-            int ch, ret;
+            int ch;
 
             if (packet_size <= 0 || skip_size <= 0)
                 return AVERROR_INVALIDDATA;
@@ -209,12 +211,12 @@ static int dsf_read_packet(AVFormatContext *s, AVPacket *pkt)
     return 0;
 }
 
-const AVInputFormat ff_dsf_demuxer = {
-    .name           = "dsf",
-    .long_name      = NULL_IF_CONFIG_SMALL("DSD Stream File (DSF)"),
+const FFInputFormat ff_dsf_demuxer = {
+    .p.name         = "dsf",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("DSD Stream File (DSF)"),
+    .p.flags        = AVFMT_GENERIC_INDEX | AVFMT_NO_BYTE_SEEK,
     .priv_data_size = sizeof(DSFContext),
     .read_probe     = dsf_probe,
     .read_header    = dsf_read_header,
     .read_packet    = dsf_read_packet,
-    .flags          = AVFMT_GENERIC_INDEX | AVFMT_NO_BYTE_SEEK,
 };

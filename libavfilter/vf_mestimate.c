@@ -21,14 +21,11 @@
 #include "motion_estimation.h"
 #include "libavcodec/mathops.h"
 #include "libavutil/common.h"
-#include "libavutil/imgutils.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
-#include "libavutil/pixdesc.h"
 #include "libavutil/motion_vector.h"
 #include "avfilter.h"
-#include "formats.h"
-#include "internal.h"
-#include "video.h"
+#include "filters.h"
 
 typedef struct MEContext {
     const AVClass *class;
@@ -47,10 +44,10 @@ typedef struct MEContext {
 
 #define OFFSET(x) offsetof(MEContext, x)
 #define FLAGS AV_OPT_FLAG_VIDEO_PARAM|AV_OPT_FLAG_FILTERING_PARAM
-#define CONST(name, help, val, unit) { name, help, 0, AV_OPT_TYPE_CONST, {.i64=val}, 0, 0, FLAGS, unit }
+#define CONST(name, help, val, u) { name, help, 0, AV_OPT_TYPE_CONST, {.i64=val}, 0, 0, FLAGS, .unit = u }
 
 static const AVOption mestimate_options[] = {
-    { "method", "motion estimation method", OFFSET(method), AV_OPT_TYPE_INT, {.i64 = AV_ME_METHOD_ESA}, AV_ME_METHOD_ESA, AV_ME_METHOD_UMH, FLAGS, "method" },
+    { "method", "motion estimation method", OFFSET(method), AV_OPT_TYPE_INT, {.i64 = AV_ME_METHOD_ESA}, AV_ME_METHOD_ESA, AV_ME_METHOD_UMH, FLAGS, .unit = "method" },
         CONST("esa",   "exhaustive search",                  AV_ME_METHOD_ESA,      "method"),
         CONST("tss",   "three step search",                  AV_ME_METHOD_TSS,      "method"),
         CONST("tdls",  "two dimensional logarithmic search", AV_ME_METHOD_TDLS,     "method"),
@@ -148,7 +145,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
     int32_t mv_count = 0;
     int ret;
 
-    if (frame->pts == AV_NOPTS_VALUE) {
+    if (frame && frame->pts == AV_NOPTS_VALUE) {
         ret = ff_filter_frame(ctx->outputs[0], frame);
         return ret;
     }
@@ -162,6 +159,8 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
     s->mv_table[1] = memcpy(s->mv_table[1], s->mv_table[0], sizeof(*s->mv_table[0]) * s->b_count);
 
     if (!s->cur) {
+        if (!frame)
+            return 0;
         s->cur = av_frame_clone(frame);
         if (!s->cur)
             return AVERROR(ENOMEM);
@@ -174,7 +173,11 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
     if (!out)
         return AVERROR(ENOMEM);
 
-    sd = av_frame_new_side_data(out, AV_FRAME_DATA_MOTION_VECTORS, 2 * s->b_count * sizeof(AVMotionVector));
+    /* The last frame has no forward reference. */
+    const int nb_dirs = s->next ? 2 : 1;
+
+    sd = av_frame_new_side_data(out, AV_FRAME_DATA_MOTION_VECTORS,
+                                nb_dirs * s->b_count * sizeof(AVMotionVector));
     if (!sd) {
         av_frame_free(&out);
         return AVERROR(ENOMEM);
@@ -183,7 +186,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
     me_ctx->data_cur = s->cur->data[0];
     me_ctx->linesize = s->cur->linesize[0];
 
-    for (dir = 0; dir < 2; dir++) {
+    for (dir = 0; dir < nb_dirs; dir++) {
         me_ctx->data_ref = (dir ? s->next : s->prev)->data[0];
 
         if (s->method == AV_ME_METHOD_DS)
@@ -328,6 +331,19 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *frame)
     return ff_filter_frame(ctx->outputs[0], out);
 }
 
+static int request_frame(AVFilterLink *outlink)
+{
+    AVFilterContext *ctx = outlink->src;
+    MEContext *s = ctx->priv;
+    int ret;
+
+    ret = ff_request_frame(ctx->inputs[0]);
+    if (ret == AVERROR_EOF && s->next)
+        ret = filter_frame(ctx->inputs[0], NULL);
+
+    return ret;
+}
+
 static av_cold void uninit(AVFilterContext *ctx)
 {
     MEContext *s = ctx->priv;
@@ -354,16 +370,17 @@ static const AVFilterPad mestimate_outputs[] = {
     {
         .name          = "default",
         .type          = AVMEDIA_TYPE_VIDEO,
+        .request_frame = request_frame,
     },
 };
 
-const AVFilter ff_vf_mestimate = {
-    .name          = "mestimate",
-    .description   = NULL_IF_CONFIG_SMALL("Generate motion vectors."),
+const FFFilter ff_vf_mestimate = {
+    .p.name        = "mestimate",
+    .p.description = NULL_IF_CONFIG_SMALL("Generate motion vectors."),
+    .p.priv_class  = &mestimate_class,
+    .p.flags       = AVFILTER_FLAG_METADATA_ONLY,
     .priv_size     = sizeof(MEContext),
-    .priv_class    = &mestimate_class,
     .uninit        = uninit,
-    .flags         = AVFILTER_FLAG_METADATA_ONLY,
     FILTER_INPUTS(mestimate_inputs),
     FILTER_OUTPUTS(mestimate_outputs),
     FILTER_PIXFMTS_ARRAY(pix_fmts),

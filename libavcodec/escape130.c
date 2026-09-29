@@ -25,8 +25,8 @@
 #define BITSTREAM_READER_LE
 #include "avcodec.h"
 #include "codec_internal.h"
+#include "decode.h"
 #include "get_bits.h"
-#include "internal.h"
 
 typedef struct Escape130Context {
     uint8_t *old_y_avg;
@@ -125,7 +125,7 @@ static av_cold int escape130_decode_init(AVCodecContext *avctx)
         return AVERROR_INVALIDDATA;
     }
 
-    s->old_y_avg = av_malloc(avctx->width * avctx->height / 4);
+    s->old_y_avg = av_mallocz(avctx->width * avctx->height / 4);
     s->buf1      = av_malloc(avctx->width * avctx->height * 3 / 2);
     s->buf2      = av_malloc(avctx->width * avctx->height * 3 / 2);
     if (!s->old_y_avg || !s->buf1 || !s->buf2) {
@@ -211,9 +211,6 @@ static int escape130_decode_frame(AVCodecContext *avctx, AVFrame *pic,
         av_log(avctx, AV_LOG_ERROR, "Insufficient frame data\n");
         return AVERROR_INVALIDDATA;
     }
-
-    if ((ret = ff_get_buffer(avctx, pic, 0)) < 0)
-        return ret;
 
     if ((ret = init_get_bits8(&gb, avpkt->data, avpkt->size)) < 0)
         return ret;
@@ -310,6 +307,9 @@ static int escape130_decode_frame(AVCodecContext *avctx, AVFrame *pic,
         skip--;
     }
 
+    if ((ret = ff_get_buffer(avctx, pic, 0)) < 0)
+        return ret;
+
     new_y  = s->new_y;
     new_cb = s->new_u;
     new_cr = s->new_v;
@@ -347,7 +347,7 @@ static int escape130_decode_frame(AVCodecContext *avctx, AVFrame *pic,
 
 const FFCodec ff_escape130_decoder = {
     .p.name         = "escape130",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Escape 130"),
+    CODEC_LONG_NAME("Escape 130"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_ESCAPE130,
     .priv_data_size = sizeof(Escape130Context),
@@ -355,5 +355,5 @@ const FFCodec ff_escape130_decoder = {
     .close          = escape130_decode_close,
     FF_CODEC_DECODE_CB(escape130_decode_frame),
     .p.capabilities = AV_CODEC_CAP_DR1,
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE | FF_CODEC_CAP_INIT_CLEANUP,
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
 };

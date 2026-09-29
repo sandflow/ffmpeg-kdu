@@ -23,6 +23,7 @@
 
 #include <VideoToolbox/VideoToolbox.h>
 
+#include "frame.h"
 #include "pixfmt.h"
 
 /**
@@ -38,9 +39,12 @@
  * depending on application usage, so it is preferable to let CoreVideo manage
  * the pool using the default implementation.
  *
- * Currently AVHWDeviceContext.hwctx and AVHWFramesContext.hwctx are always
- * NULL.
+ * Currently AVHWDeviceContext.hwctx are always NULL.
  */
+
+typedef struct AVVTFramesContext {
+    enum AVColorRange color_range;
+} AVVTFramesContext;
 
 /**
  * Convert a VideoToolbox (actually CoreVideo) format to AVPixelFormat.
@@ -62,32 +66,60 @@ uint32_t av_map_videotoolbox_format_from_pixfmt2(enum AVPixelFormat pix_fmt, boo
 
 /**
  * Convert an AVChromaLocation to a VideoToolbox/CoreVideo chroma location string.
- * Returns 0 if no known equivalent was found.
+ *
+ * The returned string is a CoreVideo constant and must not be released.
+ *
+ * Returns NULL if no known equivalent was found.
  */
 CFStringRef av_map_videotoolbox_chroma_loc_from_av(enum AVChromaLocation loc);
 
 /**
  * Convert an AVColorSpace to a VideoToolbox/CoreVideo color matrix string.
- * Returns 0 if no known equivalent was found.
+ *
+ * The returned string is borrowed from CoreVideo and must not be released.
+ * It is either a constant, or an entry of CoreVideo's internal codepoint
+ * cache; releasing a cached entry makes later lookups of the same value
+ * return a dangling pointer.
+ *
+ * Returns NULL if no known equivalent was found.
  */
 CFStringRef av_map_videotoolbox_color_matrix_from_av(enum AVColorSpace space);
 
 /**
  * Convert an AVColorPrimaries to a VideoToolbox/CoreVideo color primaries string.
- * Returns 0 if no known equivalent was found.
+ *
+ * The returned string is borrowed from CoreVideo and must not be released.
+ * It is either a constant, or an entry of CoreVideo's internal codepoint
+ * cache; releasing a cached entry makes later lookups of the same value
+ * return a dangling pointer.
+ *
+ * Returns NULL if no known equivalent was found.
  */
 CFStringRef av_map_videotoolbox_color_primaries_from_av(enum AVColorPrimaries pri);
 
 /**
  * Convert an AVColorTransferCharacteristic to a VideoToolbox/CoreVideo color transfer
  * function string.
- * Returns 0 if no known equivalent was found.
+ *
+ * The returned string is borrowed from CoreVideo and must not be released.
+ * It is either a constant, or an entry of CoreVideo's internal codepoint
+ * cache; releasing a cached entry makes later lookups of the same value
+ * return a dangling pointer.
+ *
+ * Returns NULL if no known equivalent was found.
  */
 CFStringRef av_map_videotoolbox_color_trc_from_av(enum AVColorTransferCharacteristic trc);
 
 /**
- * Update a CVPixelBufferRef's metadata to based on an AVFrame.
- * Returns 0 if no known equivalent was found.
+ * Set CVPixelBufferRef's metadata based on an AVFrame.
+ *
+ * Sets/unsets the CVPixelBuffer attachments to match as closely as possible the
+ * AVFrame metadata. To prevent inconsistent attachments, the attachments for properties
+ * that could not be matched or are unspecified in the given AVFrame are unset. So if
+ * any attachments already covered by AVFrame metadata need to be set to a specific
+ * value, this should happen after calling this function.
+ *
+ * Returns < 0 in case of an error.
  */
 int av_vt_pixbuf_set_attachments(void *log_ctx,
                                  CVPixelBufferRef pixbuf, const struct AVFrame *src);

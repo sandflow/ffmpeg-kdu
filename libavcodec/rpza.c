@@ -35,15 +35,13 @@
  */
 
 #include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
+#include "libavutil/attributes.h"
 #include "libavutil/internal.h"
 #include "avcodec.h"
 #include "bytestream.h"
 #include "codec_internal.h"
-#include "internal.h"
+#include "decode.h"
 
 typedef struct RpzaContext {
 
@@ -166,6 +164,7 @@ static int rpza_decode_stream(RpzaContext *s)
         /* Fill blocks with 4 colors */
         case 0xc0:
             colorA = bytestream2_get_be16(&s->gb);
+            av_fallthrough;
         case 0x20:
             colorB = bytestream2_get_be16(&s->gb);
 
@@ -288,7 +287,7 @@ static av_cold int rpza_decode_end(AVCodecContext *avctx)
 
 const FFCodec ff_rpza_decoder = {
     .p.name         = "rpza",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("QuickTime video (RPZA)"),
+    CODEC_LONG_NAME("QuickTime video (RPZA)"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_RPZA,
     .priv_data_size = sizeof(RpzaContext),
@@ -296,5 +295,4 @@ const FFCodec ff_rpza_decoder = {
     .close          = rpza_decode_end,
     FF_CODEC_DECODE_CB(rpza_decode_frame),
     .p.capabilities = AV_CODEC_CAP_DR1,
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };

@@ -19,7 +19,7 @@
  */
 
 #include "libavutil/avstring.h"
-#include "libavfilter/internal.h"
+#include "libavutil/mem.h"
 #include "libavutil/common.h"
 #include "libavutil/cpu.h"
 #include "libavutil/opt.h"
@@ -128,7 +128,8 @@ static int config_input(AVFilterLink *inlink)
     }
 
     s->window_size = s->fft_size;
-    buf_size = FFALIGN(s->window_size, av_cpu_max_align());
+    size_t max_align = av_cpu_max_align();
+    buf_size = FFALIGN(s->window_size, max_align);
 
     s->fft_in = av_calloc(inlink->ch_layout.nb_channels, sizeof(*s->fft_in));
     if (!s->fft_in)
@@ -233,14 +234,14 @@ static int tx_channel(AVFilterContext *ctx, void *arg, int jobnr, int nb_jobs)
 {
     AFFTFiltContext *s = ctx->priv;
     const int channels = s->channels;
-    const int start = (channels * jobnr) / nb_jobs;
-    const int end = (channels * (jobnr+1)) / nb_jobs;
+    const int start = ff_slice_pos(channels, jobnr, nb_jobs);
+    const int end = ff_slice_pos(channels, jobnr + 1, nb_jobs);
 
     for (int ch = start; ch < end; ch++) {
         AVComplexFloat *fft_in = s->fft_in[ch];
         AVComplexFloat *fft_out = s->fft_out[ch];
 
-        s->tx_fn(s->fft[ch], fft_out, fft_in, sizeof(float));
+        s->tx_fn(s->fft[ch], fft_out, fft_in, sizeof(*fft_in));
     }
 
     return 0;
@@ -253,8 +254,8 @@ static int filter_channel(AVFilterContext *ctx, void *arg, int jobnr, int nb_job
     const float *window_lut = s->window_func_lut;
     const float f = sqrtf(1.f - s->overlap);
     const int channels = s->channels;
-    const int start = (channels * jobnr) / nb_jobs;
-    const int end = (channels * (jobnr+1)) / nb_jobs;
+    const int start = ff_slice_pos(channels, jobnr, nb_jobs);
+    const int end = ff_slice_pos(channels, jobnr + 1, nb_jobs);
     double values[VAR_VARS_NB];
 
     memcpy(values, arg, sizeof(values));
@@ -292,7 +293,7 @@ static int filter_channel(AVFilterContext *ctx, void *arg, int jobnr, int nb_job
             }
         }
 
-        s->itx_fn(s->ifft[ch], fft_out, fft_temp, sizeof(float));
+        s->itx_fn(s->ifft[ch], fft_out, fft_temp, sizeof(*fft_temp));
 
         memmove(buf, buf + s->hop_size, window_size * sizeof(float));
         for (int i = 0; i < window_size; i++)
@@ -345,7 +346,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
         goto fail;
     }
 
-    out->pts = in->pts;
+    av_frame_copy_props(out, in);
     out->nb_samples = in->nb_samples;
 
     for (ch = 0; ch < inlink->ch_layout.nb_channels; ch++) {
@@ -439,23 +440,16 @@ static const AVFilterPad inputs[] = {
     },
 };
 
-static const AVFilterPad outputs[] = {
-    {
-        .name = "default",
-        .type = AVMEDIA_TYPE_AUDIO,
-    },
-};
-
-const AVFilter ff_af_afftfilt = {
-    .name            = "afftfilt",
-    .description     = NULL_IF_CONFIG_SMALL("Apply arbitrary expressions to samples in frequency domain."),
+const FFFilter ff_af_afftfilt = {
+    .p.name          = "afftfilt",
+    .p.description   = NULL_IF_CONFIG_SMALL("Apply arbitrary expressions to samples in frequency domain."),
+    .p.priv_class    = &afftfilt_class,
+    .p.flags         = AVFILTER_FLAG_SUPPORT_TIMELINE_INTERNAL |
+                       AVFILTER_FLAG_SLICE_THREADS,
     .priv_size       = sizeof(AFFTFiltContext),
-    .priv_class      = &afftfilt_class,
     FILTER_INPUTS(inputs),
-    FILTER_OUTPUTS(outputs),
+    FILTER_OUTPUTS(ff_audio_default_filterpad),
     FILTER_SINGLE_SAMPLEFMT(AV_SAMPLE_FMT_FLTP),
     .activate        = activate,
     .uninit          = uninit,
-    .flags           = AVFILTER_FLAG_SUPPORT_TIMELINE_INTERNAL |
-                       AVFILTER_FLAG_SLICE_THREADS,
 };

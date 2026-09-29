@@ -34,7 +34,6 @@
  */
 
 #include <stdint.h>
-#include <string.h>
 #include <zlib.h>
 
 #include "libavutil/imgutils.h"
@@ -43,7 +42,7 @@
 
 #include "avcodec.h"
 #include "codec_internal.h"
-#include "internal.h"
+#include "decode.h"
 
 typedef struct ScreenpressoContext {
     AVFrame *current;
@@ -138,6 +137,9 @@ static int screenpresso_decode_frame(AVCodecContext *avctx, AVFrame *frame,
         return AVERROR_INVALIDDATA;
     }
 
+    /* Codec has aligned strides */
+    src_linesize = FFALIGN(avctx->width * component_size, 4);
+
     /* Inflate the frame after the 2 byte header */
     ret = uncompress(ctx->inflated_buf, &length,
                      avpkt->data + 2, avpkt->size - 2);
@@ -145,13 +147,15 @@ static int screenpresso_decode_frame(AVCodecContext *avctx, AVFrame *frame,
         av_log(avctx, AV_LOG_ERROR, "Deflate error %d.\n", ret);
         return AVERROR_UNKNOWN;
     }
+    if (length < src_linesize * avctx->height) {
+        av_log(avctx, AV_LOG_ERROR, "Deflated %lu bytes, but %d are needed\n",
+               length, src_linesize * avctx->height);
+        return AVERROR_INVALIDDATA;
+    }
 
     ret = ff_reget_buffer(avctx, ctx->current, 0);
     if (ret < 0)
         return ret;
-
-    /* Codec has aligned strides */
-    src_linesize = FFALIGN(avctx->width * component_size, 4);
 
     /* When a keyframe is found, copy it (flipped) */
     if (keyframe)
@@ -174,7 +178,7 @@ static int screenpresso_decode_frame(AVCodecContext *avctx, AVFrame *frame,
     /* Usual properties */
     if (keyframe) {
         frame->pict_type = AV_PICTURE_TYPE_I;
-        frame->key_frame = 1;
+        frame->flags |= AV_FRAME_FLAG_KEY;
     } else {
         frame->pict_type = AV_PICTURE_TYPE_P;
     }
@@ -185,7 +189,7 @@ static int screenpresso_decode_frame(AVCodecContext *avctx, AVFrame *frame,
 
 const FFCodec ff_screenpresso_decoder = {
     .p.name         = "screenpresso",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Screenpresso"),
+    CODEC_LONG_NAME("Screenpresso"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_SCREENPRESSO,
     .init           = screenpresso_init,
@@ -193,6 +197,5 @@ const FFCodec ff_screenpresso_decoder = {
     .close          = screenpresso_close,
     .priv_data_size = sizeof(ScreenpressoContext),
     .p.capabilities = AV_CODEC_CAP_DR1,
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE |
-                      FF_CODEC_CAP_INIT_CLEANUP,
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
 };

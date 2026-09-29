@@ -6,10 +6,58 @@ FFmpeg-KDU is a patchset against FFmpeg that adds support for the
 [Kakadu SDK](https://kakadusoftware.com/) through the
 [kduc](https://github.com/sandflow/kduc).
 
+## Branches
+
+| Branch               | FFmpeg                                                 | Tested with  |
+|----------------------|--------------------------------------------------------|--------------|
+| `integration-master` | [master](https://github.com/FFmpeg/FFmpeg/tree/master) | `74962818a8` |
+| `integration-9.0`    | 9.0                                                    | `n9.0.2`     |
+| `integration-8.1`    | 8.1                                                    | `n8.1.3`     |
+| `integration-7.1`    | 7.1                                                    | `n7.1.5`     |
+| `integration-6.1`    | 6.1                                                    | `n6.1.6`     |
+| `integration`        | 5.1                                                    | `n5.1.10`    |
+
+The patchset was tested with Kakadu SDK 8.6.1.
+
+`integration-master` contains the complete history of the patchset for FFmpeg 6.1
+and later. Modifications to the patchset are developed on branches created
+from `integration-master`.
+
+`integration` contains the complete history of the patchset for FFmpeg 5.1.
+
 ## How to apply FFmpeg-KDU
 
-The `integration` branch contains the complete history of the patchset and is
-intended to be squashed merged onto the [FFMPEG 5.1](https://github.com/FFmpeg/FFmpeg/tree/n5.1.10):
+### FFmpeg releases
+
+Check out the branch for the FFmpeg release, which contains the release with
+the patchset applied as a single commit, e.g. for FFmpeg 8.1:
+
+```sh
+git clone -b integration-8.1 https://github.com/sandflow/ffmpeg-kdu.git
+```
+
+The release branches are generated from `integration-master`. The
+`integration-6.1` and `integration-7.1` branches additionally define the
+`CODEC_PIXFMTS` macro, which FFmpeg added in 8.0.
+
+### FFmpeg master
+
+`integration-master` is intended to be squashed merged onto
+[FFmpeg master](https://github.com/FFmpeg/FFmpeg/tree/master):
+
+```sh
+git clone https://github.com/FFmpeg/FFmpeg.git
+cd FFmpeg
+git remote add ffmpeg-kdu https://github.com/sandflow/ffmpeg-kdu.git
+git fetch ffmpeg-kdu integration-master:kdu-integration
+git checkout -b master-kdu origin/master
+git merge --squash kdu-integration
+```
+
+### FFmpeg 5.1
+
+`integration` is intended to be squashed merged onto
+[FFmpeg 5.1](https://github.com/FFmpeg/FFmpeg/tree/n5.1.10):
 
 ```sh
 git clone https://github.com/FFmpeg/FFmpeg.git
@@ -19,9 +67,6 @@ git fetch ffmpeg-kdu integration:kdu-integration
 git checkout -b n5.1-kdu n5.1.10
 git merge --squash kdu-integration
 ```
-
-Modifications to the patchset are developed on branches created from
-`integration` branch.
 
 ## How to build
 

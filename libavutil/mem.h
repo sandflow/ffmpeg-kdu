@@ -27,12 +27,10 @@
 #ifndef AVUTIL_MEM_H
 #define AVUTIL_MEM_H
 
-#include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "attributes.h"
-#include "avutil.h"
-#include "version.h"
 
 /**
  * @addtogroup lavu_mem
@@ -51,86 +49,6 @@
  * @{
  */
 
-#if FF_API_DECLARE_ALIGNED
-/**
- *
- * @defgroup lavu_mem_macros Alignment Macros
- * Helper macros for declaring aligned variables.
- * @{
- */
-
-/**
- * @def DECLARE_ALIGNED(n,t,v)
- * Declare a variable that is aligned in memory.
- *
- * @code{.c}
- * DECLARE_ALIGNED(16, uint16_t, aligned_int) = 42;
- * DECLARE_ALIGNED(32, uint8_t, aligned_array)[128];
- *
- * // The default-alignment equivalent would be
- * uint16_t aligned_int = 42;
- * uint8_t aligned_array[128];
- * @endcode
- *
- * @param n Minimum alignment in bytes
- * @param t Type of the variable (or array element)
- * @param v Name of the variable
- */
-
-/**
- * @def DECLARE_ASM_ALIGNED(n,t,v)
- * Declare an aligned variable appropriate for use in inline assembly code.
- *
- * @code{.c}
- * DECLARE_ASM_ALIGNED(16, uint64_t, pw_08) = UINT64_C(0x0008000800080008);
- * @endcode
- *
- * @param n Minimum alignment in bytes
- * @param t Type of the variable (or array element)
- * @param v Name of the variable
- */
-
-/**
- * @def DECLARE_ASM_CONST(n,t,v)
- * Declare a static constant aligned variable appropriate for use in inline
- * assembly code.
- *
- * @code{.c}
- * DECLARE_ASM_CONST(16, uint64_t, pw_08) = UINT64_C(0x0008000800080008);
- * @endcode
- *
- * @param n Minimum alignment in bytes
- * @param t Type of the variable (or array element)
- * @param v Name of the variable
- */
-
-#if defined(__INTEL_COMPILER) && __INTEL_COMPILER < 1110 || defined(__SUNPRO_C)
-    #define DECLARE_ALIGNED(n,t,v)      t __attribute__ ((aligned (n))) v
-    #define DECLARE_ASM_ALIGNED(n,t,v)  t __attribute__ ((aligned (n))) v
-    #define DECLARE_ASM_CONST(n,t,v)    const t __attribute__ ((aligned (n))) v
-#elif defined(__DJGPP__)
-    #define DECLARE_ALIGNED(n,t,v)      t __attribute__ ((aligned (FFMIN(n, 16)))) v
-    #define DECLARE_ASM_ALIGNED(n,t,v)  t av_used __attribute__ ((aligned (FFMIN(n, 16)))) v
-    #define DECLARE_ASM_CONST(n,t,v)    static const t av_used __attribute__ ((aligned (FFMIN(n, 16)))) v
-#elif defined(__GNUC__) || defined(__clang__)
-    #define DECLARE_ALIGNED(n,t,v)      t __attribute__ ((aligned (n))) v
-    #define DECLARE_ASM_ALIGNED(n,t,v)  t av_used __attribute__ ((aligned (n))) v
-    #define DECLARE_ASM_CONST(n,t,v)    static const t av_used __attribute__ ((aligned (n))) v
-#elif defined(_MSC_VER)
-    #define DECLARE_ALIGNED(n,t,v)      __declspec(align(n)) t v
-    #define DECLARE_ASM_ALIGNED(n,t,v)  __declspec(align(n)) t v
-    #define DECLARE_ASM_CONST(n,t,v)    __declspec(align(n)) static const t v
-#else
-    #define DECLARE_ALIGNED(n,t,v)      t v
-    #define DECLARE_ASM_ALIGNED(n,t,v)  t v
-    #define DECLARE_ASM_CONST(n,t,v)    static const t v
-#endif
-
-/**
- * @}
- */
-#endif
-
 /**
  * @defgroup lavu_mem_attrs Function Attributes
  * Function attributes applicable to memory handling functions.
@@ -147,7 +65,7 @@
  * @see <a href="https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#index-g_t_0040code_007bmalloc_007d-function-attribute-3251">Function attribute `malloc` in GCC's documentation</a>
  */
 
-#if AV_GCC_VERSION_AT_LEAST(3,1)
+#if AV_GCC_VERSION_AT_LEAST(3,1) || AV_HAS_ATTRIBUTE(__malloc__)
     #define av_malloc_attrib __attribute__((__malloc__))
 #else
     #define av_malloc_attrib
@@ -168,7 +86,7 @@
  * @see <a href="https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#index-g_t_0040code_007balloc_005fsize_007d-function-attribute-3220">Function attribute `alloc_size` in GCC's documentation</a>
  */
 
-#if AV_GCC_VERSION_AT_LEAST(4,3)
+#if AV_GCC_VERSION_AT_LEAST(4,3) || AV_HAS_ATTRIBUTE(alloc_size)
     #define av_alloc_size(...) __attribute__((alloc_size(__VA_ARGS__)))
 #else
     #define av_alloc_size(...)
@@ -238,14 +156,6 @@ av_alloc_size(1, 2) void *av_malloc_array(size_t nmemb, size_t size);
  * @see av_malloc_array()
  */
 void *av_calloc(size_t nmemb, size_t size) av_malloc_attrib av_alloc_size(1, 2);
-
-#if FF_API_AV_MALLOCZ_ARRAY
-/**
- * @deprecated use av_calloc()
- */
-attribute_deprecated
-void *av_mallocz_array(size_t nmemb, size_t size) av_malloc_attrib av_alloc_size(1, 2);
-#endif
 
 /**
  * Allocate, reallocate, or free a block of memory.
@@ -667,7 +577,8 @@ void *av_dynarray2_add(void **tab_ptr, int *nb_ptr, size_t elem_size,
 /**
  * Multiply two `size_t` values checking for overflow.
  *
- * @param[in]  a,b Operands of multiplication
+ * @param[in]  a   Operand of multiplication
+ * @param[in]  b   Operand of multiplication
  * @param[out] r   Pointer to the result of the operation
  * @return 0 on success, AVERROR(EINVAL) on overflow
  */

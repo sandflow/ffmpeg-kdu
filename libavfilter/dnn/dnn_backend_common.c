@@ -21,6 +21,7 @@
  * DNN common functions different backends.
  */
 
+#include "libavutil/mem.h"
 #include "dnn_backend_common.h"
 
 #define DNN_ASYNC_SUCCESS (void *)0
@@ -41,13 +42,6 @@ int ff_check_exec_params(void *ctx, DNNBackendType backend, DNNFunctionType func
     if (!exec_params->out_frame && func_type == DFT_PROCESS_FRAME) {
         av_log(ctx, AV_LOG_ERROR, "out frame is NULL when execute model.\n");
         return AVERROR(EINVAL);
-    }
-
-    if (exec_params->nb_output != 1 && backend != DNN_TF) {
-        // currently, the filter does not need multiple outputs,
-        // so we just pending the support until we really need it.
-        avpriv_report_missing_feature(ctx, "multiple outputs");
-        return AVERROR(ENOSYS);
     }
 
     return 0;
@@ -95,17 +89,26 @@ int ff_dnn_async_module_cleanup(DNNAsyncExecModule *async_module)
     if (!async_module) {
         return AVERROR(EINVAL);
     }
-#if HAVE_PTHREAD_CANCEL
-    pthread_join(async_module->thread_id, &status);
-    if (status == DNN_ASYNC_FAIL) {
-        av_log(NULL, AV_LOG_ERROR, "Last Inference Failed.\n");
-        return DNN_GENERIC_ERROR;
+    if (async_module->thread_started) {
+        pthread_join(async_module->thread_id, &status);
+        async_module->thread_started = 0;
+        if (status == DNN_ASYNC_FAIL) {
+            av_log(NULL, AV_LOG_ERROR, "Last Inference Failed.\n");
+            return DNN_GENERIC_ERROR;
+        }
     }
-#endif
     async_module->start_inference = NULL;
     async_module->callback = NULL;
     async_module->args = NULL;
     return 0;
+}
+
+void ff_dnn_wait_requests(SafeQueue *request_queue, int nireq)
+{
+    if (!request_queue)
+        return;
+
+    ff_safe_queue_wait_for_size(request_queue, nireq);
 }
 
 int ff_dnn_start_inference_async(void *ctx, DNNAsyncExecModule *async_module)
@@ -118,24 +121,21 @@ int ff_dnn_start_inference_async(void *ctx, DNNAsyncExecModule *async_module)
         return AVERROR(EINVAL);
     }
 
-#if HAVE_PTHREAD_CANCEL
-    pthread_join(async_module->thread_id, &status);
-    if (status == DNN_ASYNC_FAIL) {
-        av_log(ctx, AV_LOG_ERROR, "Unable to start inference as previous inference failed.\n");
-        return DNN_GENERIC_ERROR;
+    if (async_module->thread_started) {
+        pthread_join(async_module->thread_id, &status);
+        async_module->thread_started = 0;
+        if (status == DNN_ASYNC_FAIL) {
+            av_log(ctx, AV_LOG_ERROR, "Unable to start inference as previous inference failed.\n");
+            return DNN_GENERIC_ERROR;
+        }
     }
     ret = pthread_create(&async_module->thread_id, NULL, async_thread_routine, async_module);
     if (ret != 0) {
         av_log(ctx, AV_LOG_ERROR, "Unable to start async inference.\n");
         return ret;
     }
-#else
-    ret = async_module->start_inference(async_module->args);
-    if (ret != 0) {
-        return ret;
-    }
-    async_module->callback(async_module->args);
-#endif
+    async_module->thread_started = 1;
+
     return 0;
 }
 

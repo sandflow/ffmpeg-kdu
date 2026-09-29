@@ -21,10 +21,12 @@
 
 #include "libavutil/channel_layout.h"
 #include "libavutil/common.h"
+#include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "avcodec.h"
 #include "codec_internal.h"
-#include "internal.h"
+#include "decode.h"
 
 #ifdef AACDECODER_LIB_VL0
 #define FDKDEC_VER_AT_LEAST(vl0, vl1) \
@@ -62,7 +64,11 @@ typedef struct FDKAACDecContext {
 #if FDKDEC_VER_AT_LEAST(2, 5) // 2.5.10
     int output_delay_set;
     int flush_samples;
-    int delay_samples;
+    int skip_samples;
+    int output_delay;
+    int discard_padding;
+    int64_t last_pts;
+    int64_t last_dts;
 #endif
     AVChannelLayout downmix_layout;
 } FDKAACDecContext;
@@ -75,29 +81,29 @@ typedef struct FDKAACDecContext {
 #define OFFSET(x) offsetof(FDKAACDecContext, x)
 #define AD AV_OPT_FLAG_AUDIO_PARAM | AV_OPT_FLAG_DECODING_PARAM
 static const AVOption fdk_aac_dec_options[] = {
-    { "conceal", "Error concealment method", OFFSET(conceal_method), AV_OPT_TYPE_INT, { .i64 = CONCEAL_METHOD_NOISE_SUBSTITUTION }, CONCEAL_METHOD_SPECTRAL_MUTING, CONCEAL_METHOD_NB - 1, AD, "conceal" },
-    { "spectral", "Spectral muting",      0, AV_OPT_TYPE_CONST, { .i64 = CONCEAL_METHOD_SPECTRAL_MUTING },      INT_MIN, INT_MAX, AD, "conceal" },
-    { "noise",    "Noise Substitution",   0, AV_OPT_TYPE_CONST, { .i64 = CONCEAL_METHOD_NOISE_SUBSTITUTION },   INT_MIN, INT_MAX, AD, "conceal" },
-    { "energy",   "Energy Interpolation", 0, AV_OPT_TYPE_CONST, { .i64 = CONCEAL_METHOD_ENERGY_INTERPOLATION }, INT_MIN, INT_MAX, AD, "conceal" },
+    { "conceal", "Error concealment method", OFFSET(conceal_method), AV_OPT_TYPE_INT, { .i64 = CONCEAL_METHOD_NOISE_SUBSTITUTION }, CONCEAL_METHOD_SPECTRAL_MUTING, CONCEAL_METHOD_NB - 1, AD, .unit = "conceal" },
+    { "spectral", "Spectral muting",      0, AV_OPT_TYPE_CONST, { .i64 = CONCEAL_METHOD_SPECTRAL_MUTING },      INT_MIN, INT_MAX, AD, .unit = "conceal" },
+    { "noise",    "Noise Substitution",   0, AV_OPT_TYPE_CONST, { .i64 = CONCEAL_METHOD_NOISE_SUBSTITUTION },   INT_MIN, INT_MAX, AD, .unit = "conceal" },
+    { "energy",   "Energy Interpolation", 0, AV_OPT_TYPE_CONST, { .i64 = CONCEAL_METHOD_ENERGY_INTERPOLATION }, INT_MIN, INT_MAX, AD, .unit = "conceal" },
     { "drc_boost", "Dynamic Range Control: boost, where [0] is none and [127] is max boost",
-                     OFFSET(drc_boost),      AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, 127, AD, NULL    },
+                     OFFSET(drc_boost),      AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, 127, AD, .unit = NULL    },
     { "drc_cut",   "Dynamic Range Control: attenuation factor, where [0] is none and [127] is max compression",
-                     OFFSET(drc_cut),        AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, 127, AD, NULL    },
+                     OFFSET(drc_cut),        AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, 127, AD, .unit = NULL    },
     { "drc_level", "Dynamic Range Control: reference level, quantized to 0.25dB steps where [0] is 0dB and [127] is -31.75dB, -1 for auto, and -2 for disabled",
-                     OFFSET(drc_level),      AV_OPT_TYPE_INT,   { .i64 = -1},  -2, 127, AD, NULL    },
+                     OFFSET(drc_level),      AV_OPT_TYPE_INT,   { .i64 = -1},  -2, 127, AD, .unit = NULL    },
     { "drc_heavy", "Dynamic Range Control: heavy compression, where [1] is on (RF mode) and [0] is off",
-                     OFFSET(drc_heavy),      AV_OPT_TYPE_INT,   { .i64 = -1},  -1, 1,   AD, NULL    },
+                     OFFSET(drc_heavy),      AV_OPT_TYPE_INT,   { .i64 = -1},  -1, 1,   AD, .unit = NULL    },
 #if FDKDEC_VER_AT_LEAST(2, 5) // 2.5.10
     { "level_limit", "Signal level limiting",
                      OFFSET(level_limit),    AV_OPT_TYPE_BOOL,  { .i64 = -1 }, -1, 1, AD },
 #endif
 #if FDKDEC_VER_AT_LEAST(3, 0) // 3.0.0
     { "drc_effect","Dynamic Range Control: effect type, where e.g. [0] is none and [6] is general",
-                     OFFSET(drc_effect),     AV_OPT_TYPE_INT,   { .i64 = -1},  -1, 8,   AD, NULL    },
+                     OFFSET(drc_effect),     AV_OPT_TYPE_INT,   { .i64 = -1},  -1, 8,   AD, .unit = NULL    },
 #endif
 #if FDKDEC_VER_AT_LEAST(3, 1) // 3.1.0
     { "album_mode","Dynamic Range Control: album mode, where [0] is off and [1] is on",
-                     OFFSET(album_mode),     AV_OPT_TYPE_INT,   { .i64 = -1},  -1, 1,   AD, NULL    },
+                     OFFSET(album_mode),     AV_OPT_TYPE_INT,   { .i64 = -1},  -1, 1,   AD, .unit = NULL    },
 #endif
     { "downmix", "Request a specific channel layout from the decoder", OFFSET(downmix_layout), AV_OPT_TYPE_CHLAYOUT, {.str = NULL}, .flags = AD },
     { NULL }
@@ -110,7 +116,7 @@ static const AVClass fdk_aac_dec_class = {
     .version    = LIBAVUTIL_VERSION_INT,
 };
 
-static int get_stream_info(AVCodecContext *avctx)
+static int get_stream_info(AVCodecContext *avctx, AVFrame *frame)
 {
     FDKAACDecContext *s   = avctx->priv_data;
     CStreamInfo *info     = aacDecoder_GetStreamInfo(s->handle);
@@ -129,11 +135,17 @@ static int get_stream_info(AVCodecContext *avctx)
     }
     avctx->sample_rate = info->sampleRate;
     avctx->frame_size  = info->frameSize;
+    avctx->profile     = info->aot - 1;
+
+    frame->flags |= AV_FRAME_FLAG_KEY * !!(info->flags & AC_INDEP);
 #if FDKDEC_VER_AT_LEAST(2, 5) // 2.5.10
     if (!s->output_delay_set && info->outputDelay) {
         // Set this only once.
         s->flush_samples    = info->outputDelay;
-        s->delay_samples    = info->outputDelay;
+        s->skip_samples     = info->outputDelay;
+        s->output_delay     = info->outputDelay;
+        s->last_pts         = AV_NOPTS_VALUE;
+        s->last_dts         = AV_NOPTS_VALUE;
         s->output_delay_set = 1;
     }
 #endif
@@ -147,26 +159,28 @@ static int get_stream_info(AVCodecContext *avctx)
         channel_counts[ctype]++;
     }
     av_log(avctx, AV_LOG_DEBUG,
-           "%d channels - front:%d side:%d back:%d lfe:%d top:%d\n",
+           "%d channels - front:%d side:%d back:%d lfe:%d top:%d bottom %d\n",
            info->numChannels,
            channel_counts[ACT_FRONT], channel_counts[ACT_SIDE],
            channel_counts[ACT_BACK],  channel_counts[ACT_LFE],
            channel_counts[ACT_FRONT_TOP] + channel_counts[ACT_SIDE_TOP] +
-           channel_counts[ACT_BACK_TOP]  + channel_counts[ACT_TOP]);
+           channel_counts[ACT_BACK_TOP]  + channel_counts[ACT_TOP],
+           channel_counts[ACT_FRONT_BOTTOM] + channel_counts[ACT_SIDE_BOTTOM] +
+           channel_counts[ACT_BACK_BOTTOM]  + channel_counts[ACT_BOTTOM]);
 
     switch (channel_counts[ACT_FRONT]) {
+    case 5:
     case 4:
-        ch_layout |= AV_CH_LAYOUT_STEREO | AV_CH_FRONT_LEFT_OF_CENTER |
+        ch_layout |= AV_CH_FRONT_LEFT_OF_CENTER |
                      AV_CH_FRONT_RIGHT_OF_CENTER;
-        break;
+        av_fallthrough;
     case 3:
-        ch_layout |= AV_CH_LAYOUT_STEREO | AV_CH_FRONT_CENTER;
-        break;
     case 2:
         ch_layout |= AV_CH_LAYOUT_STEREO;
-        break;
+        av_fallthrough;
     case 1:
-        ch_layout |= AV_CH_FRONT_CENTER;
+        if (channel_counts[ACT_FRONT] & 1)
+            ch_layout |= AV_CH_FRONT_CENTER;
         break;
     default:
         av_log(avctx, AV_LOG_WARNING,
@@ -175,6 +189,7 @@ static int get_stream_info(AVCodecContext *avctx)
         ch_error = 1;
         break;
     }
+
     if (channel_counts[ACT_SIDE] > 0) {
         if (channel_counts[ACT_SIDE] == 2) {
             ch_layout |= AV_CH_SIDE_LEFT | AV_CH_SIDE_RIGHT;
@@ -187,14 +202,16 @@ static int get_stream_info(AVCodecContext *avctx)
     }
     if (channel_counts[ACT_BACK] > 0) {
         switch (channel_counts[ACT_BACK]) {
+        case 4:
+            ch_layout |= AV_CH_SIDE_LEFT | AV_CH_SIDE_RIGHT;
+            av_fallthrough;
         case 3:
-            ch_layout |= AV_CH_BACK_LEFT | AV_CH_BACK_RIGHT | AV_CH_BACK_CENTER;
-            break;
         case 2:
             ch_layout |= AV_CH_BACK_LEFT | AV_CH_BACK_RIGHT;
-            break;
+            av_fallthrough;
         case 1:
-            ch_layout |= AV_CH_BACK_CENTER;
+            if (channel_counts[ACT_BACK] & 1)
+                ch_layout |= AV_CH_BACK_CENTER;
             break;
         default:
             av_log(avctx, AV_LOG_WARNING,
@@ -212,6 +229,78 @@ static int get_stream_info(AVCodecContext *avctx)
                    "unsupported number of LFE channels: %d\n",
                    channel_counts[ACT_LFE]);
             ch_error = 1;
+        }
+    }
+    if (channel_counts[ACT_FRONT_TOP] > 0) {
+        switch (channel_counts[ACT_FRONT_TOP]) {
+        case 3:
+        case 2:
+            ch_layout |= AV_CH_TOP_FRONT_LEFT | AV_CH_TOP_FRONT_RIGHT;
+            av_fallthrough;
+        case 1:
+            if (channel_counts[ACT_FRONT_TOP] & 1)
+                ch_layout |= AV_CH_TOP_FRONT_CENTER;
+            break;
+        default:
+            av_log(avctx, AV_LOG_WARNING,
+                   "unsupported number of top front channels: %d\n",
+                   channel_counts[ACT_FRONT_TOP]);
+            ch_error = 1;
+            break;
+        }
+    }
+    if (channel_counts[ACT_BACK_TOP] > 0) {
+        switch (channel_counts[ACT_BACK_TOP]) {
+        case 3:
+        case 2:
+            ch_layout |= AV_CH_TOP_BACK_LEFT | AV_CH_TOP_BACK_RIGHT;
+            av_fallthrough;
+        case 1:
+            if (channel_counts[ACT_BACK_TOP] & 1)
+                ch_layout |= AV_CH_TOP_BACK_CENTER;
+            break;
+        default:
+            av_log(avctx, AV_LOG_WARNING,
+                   "unsupported number of top back channels: %d\n",
+                   channel_counts[ACT_BACK_TOP]);
+            ch_error = 1;
+            break;
+        }
+    }
+    if (channel_counts[ACT_SIDE_TOP] > 0) {
+        switch (channel_counts[ACT_SIDE_TOP]) {
+        case 3:
+        case 2:
+            ch_layout |= AV_CH_TOP_SIDE_LEFT | AV_CH_TOP_SIDE_RIGHT;
+            av_fallthrough;
+        case 1:
+            if (channel_counts[ACT_SIDE_TOP] & 1)
+                ch_layout |= AV_CH_TOP_CENTER;
+            break;
+        default:
+            av_log(avctx, AV_LOG_WARNING,
+                   "unsupported number of top side channels: %d\n",
+                   channel_counts[ACT_SIDE_TOP]);
+            ch_error = 1;
+            break;
+        }
+    }
+    if (channel_counts[ACT_FRONT_BOTTOM] > 0) {
+        switch (channel_counts[ACT_FRONT_BOTTOM]) {
+        case 3:
+        case 2:
+            ch_layout |= AV_CH_BOTTOM_FRONT_LEFT | AV_CH_BOTTOM_FRONT_RIGHT;
+            av_fallthrough;
+        case 1:
+            if (channel_counts[ACT_FRONT_BOTTOM] & 1)
+                ch_layout |= AV_CH_BOTTOM_FRONT_CENTER;
+            break;
+        default:
+            av_log(avctx, AV_LOG_WARNING,
+                   "unsupported number of bottom front channels: %d\n",
+                   channel_counts[ACT_FRONT_BOTTOM]);
+            ch_error = 1;
+            break;
         }
     }
 
@@ -264,16 +353,8 @@ static av_cold int fdk_aac_decode_init(AVCodecContext *avctx)
         return AVERROR_UNKNOWN;
     }
 
-#if FF_API_OLD_CHANNEL_LAYOUT
-FF_DISABLE_DEPRECATION_WARNINGS
-    if (avctx->request_channel_layout) {
-        av_channel_layout_uninit(&s->downmix_layout);
-        av_channel_layout_from_mask(&s->downmix_layout, avctx->request_channel_layout);
-    }
-FF_ENABLE_DEPRECATION_WARNINGS
-#endif
     if (s->downmix_layout.nb_channels > 0 &&
-        s->downmix_layout.order != AV_CHANNEL_ORDER_NATIVE) {
+        s->downmix_layout.order == AV_CHANNEL_ORDER_NATIVE) {
         int downmix_channels = -1;
 
         switch (s->downmix_layout.u.mask) {
@@ -305,6 +386,12 @@ FF_ENABLE_DEPRECATION_WARNINGS
                }
             }
         }
+#if FDKDEC_VER_AT_LEAST(2, 5)
+    } else {
+        // AAC_PCM_MAX_OUTPUT_CHANNELS == 0 means outputting all the coded channels
+        if (aacDecoder_SetParam(s->handle, AAC_PCM_MAX_OUTPUT_CHANNELS, 0) != AAC_DEC_OK)
+           av_log(avctx, AV_LOG_WARNING, "Unable to set output channels in the decoder\n");
+#endif
     }
 
     if (s->drc_boost != -1) {
@@ -385,7 +472,6 @@ static int fdk_aac_decode_frame(AVCodecContext *avctx, AVFrame *frame,
     AAC_DECODER_ERROR err;
     UINT valid = avpkt->size;
     UINT flags = 0;
-    int input_offset = 0;
 
     if (avpkt->size) {
         err = aacDecoder_Fill(s->handle, &avpkt->data, &avpkt->size, &valid);
@@ -399,10 +485,10 @@ static int fdk_aac_decode_frame(AVCodecContext *avctx, AVFrame *frame,
         if (s->flush_samples > 0) {
             flags |= AACDEC_FLUSH;
         } else {
-            return AVERROR_EOF;
+            return 0;
         }
 #else
-        return AVERROR_EOF;
+        return 0;
 #endif
     }
 
@@ -420,39 +506,80 @@ static int fdk_aac_decode_frame(AVCodecContext *avctx, AVFrame *frame,
         goto end;
     }
 
-    if ((ret = get_stream_info(avctx)) < 0)
+    if ((ret = get_stream_info(avctx, frame)) < 0)
         goto end;
     frame->nb_samples = avctx->frame_size;
 
+    if ((ret = ff_get_buffer(avctx, frame, 0)) < 0)
+        goto end;
+
 #if FDKDEC_VER_AT_LEAST(2, 5) // 2.5.10
     if (flags & AACDEC_FLUSH) {
+        if (s->last_pts != AV_NOPTS_VALUE)
+            frame->pts = av_sat_add64(s->last_pts,
+                                      av_rescale_q(frame->nb_samples, avctx->time_base,
+                                                   (AVRational){ 1, avctx->sample_rate }));
+        if (s->last_dts != AV_NOPTS_VALUE)
+            frame->pkt_dts = av_sat_add64(s->last_dts,
+                                          av_rescale_q(frame->nb_samples, avctx->time_base,
+                                                       (AVRational){ 1, avctx->sample_rate }));
+
         // Only return the right amount of samples at the end; if calling the
         // decoder with AACDEC_FLUSH, it will keep returning frames indefinitely.
         frame->nb_samples = FFMIN(s->flush_samples, frame->nb_samples);
         av_log(s, AV_LOG_DEBUG, "Returning %d/%d delayed samples.\n",
                                 frame->nb_samples, s->flush_samples);
-        s->flush_samples -= frame->nb_samples;
-    } else {
-        // Trim off samples from the start to compensate for extra decoder
-        // delay. We could also just adjust the pts, but this avoids
-        // including the extra samples in the output altogether.
-        if (s->delay_samples) {
-            int drop_samples = FFMIN(s->delay_samples, frame->nb_samples);
-            av_log(s, AV_LOG_DEBUG, "Dropping %d/%d delayed samples.\n",
-                                    drop_samples, s->delay_samples);
-            s->delay_samples  -= drop_samples;
-            frame->nb_samples -= drop_samples;
-            input_offset = drop_samples * avctx->ch_layout.nb_channels;
-            if (frame->nb_samples <= 0)
-                return 0;
+        if (s->skip_samples || s->discard_padding) {
+            AVFrameSideData *sd = av_frame_get_side_data(frame, AV_FRAME_DATA_SKIP_SAMPLES);
+            if (!sd) {
+                sd = av_frame_new_side_data(frame, AV_FRAME_DATA_SKIP_SAMPLES, 10);
+                if (sd)
+                    memset(sd->data, 0, 10);
+            }
+            if (sd && sd->size >= 10) {
+                AV_WL32(sd->data,     s->skip_samples);
+                AV_WL32(sd->data + 4, s->discard_padding);
+            }
+            s->skip_samples = 0;
+            s->discard_padding = 0;
         }
+        s->flush_samples -= frame->nb_samples;
+        s->last_pts = frame->pts;
+        s->last_dts = frame->pkt_dts;
+    } else {
+        AVFrameSideData *sd = av_frame_get_side_data(frame, AV_FRAME_DATA_SKIP_SAMPLES);
+        if (!sd && s->skip_samples) {
+            sd = av_frame_new_side_data(frame, AV_FRAME_DATA_SKIP_SAMPLES, 10);
+            if (sd)
+                memset(sd->data, 0, 10);
+        }
+        if (sd && sd->size >= 10) {
+            int skip_samples = AV_RL32(sd->data);
+            s->discard_padding = AV_RL32(sd->data + 4);
+            if (s->discard_padding >= s->output_delay) {
+                AV_WL32(sd->data + 4, s->discard_padding - s->output_delay);
+                s->discard_padding = s->output_delay;
+            } else
+                AV_WL32(sd->data + 4, 0);
+            AV_WL32(sd->data, skip_samples + s->skip_samples);
+            s->skip_samples = 0;
+        }
+        if (frame->pts != AV_NOPTS_VALUE && s->output_delay)
+            frame->pts = av_sat_sub64(frame->pts,
+                                      av_rescale_q(s->output_delay,
+                                                   (AVRational){ 1, avctx->sample_rate },
+                                                   avctx->time_base));
+        if (frame->pkt_dts != AV_NOPTS_VALUE && s->output_delay)
+            frame->pkt_dts = av_sat_sub64(frame->pkt_dts,
+                                          av_rescale_q(s->output_delay,
+                                                       (AVRational){ 1, avctx->sample_rate },
+                                                       avctx->time_base));
+        s->last_pts = frame->pts;
+        s->last_dts = frame->pkt_dts;
     }
 #endif
 
-    if ((ret = ff_get_buffer(avctx, frame, 0)) < 0)
-        goto end;
-
-    memcpy(frame->extended_data[0], s->decoder_buffer + input_offset,
+    memcpy(frame->extended_data[0], s->decoder_buffer,
            avctx->ch_layout.nb_channels * frame->nb_samples *
            av_get_bytes_per_sample(avctx->sample_fmt));
 
@@ -474,11 +601,30 @@ static av_cold void fdk_aac_decode_flush(AVCodecContext *avctx)
     if ((err = aacDecoder_SetParam(s->handle,
                                    AAC_TPDEC_CLEAR_BUFFER, 1)) != AAC_DEC_OK)
         av_log(avctx, AV_LOG_WARNING, "failed to clear buffer when flushing\n");
+
+#if FDKDEC_VER_AT_LEAST(2, 5) // 2.5.10
+    s->skip_samples = 0;
+    s->discard_padding = 0;
+    s->flush_samples = 0;
+    s->output_delay = 0;
+    s->last_pts = AV_NOPTS_VALUE;
+    s->last_dts = AV_NOPTS_VALUE;
+    s->output_delay_set = 0;
+
+    // Call aacDecoder_DecodeFrame() with flush and clear history flags as the
+    // above aacDecoder_SetParam() call is seemingly not sufficient.
+    // Ignore the return code given it will not be AAC_DEC_OK if nothing is
+    // buffered internally (e.g. trying to flush the decoder before passing a
+    // single packet to it).
+    aacDecoder_DecodeFrame(s->handle, (INT_PCM *) s->decoder_buffer,
+                           s->decoder_buffer_size / sizeof(INT_PCM),
+                           AACDEC_FLUSH | AACDEC_CLRHIST);
+#endif
 }
 
 const FFCodec ff_libfdk_aac_decoder = {
     .p.name         = "libfdk_aac",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Fraunhofer FDK AAC"),
+    CODEC_LONG_NAME("Fraunhofer FDK AAC"),
     .p.type         = AVMEDIA_TYPE_AUDIO,
     .p.id           = AV_CODEC_ID_AAC,
     .priv_data_size = sizeof(FDKAACDecContext),
@@ -492,7 +638,6 @@ const FFCodec ff_libfdk_aac_decoder = {
 #endif
     ,
     .p.priv_class   = &fdk_aac_dec_class,
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE |
-                      FF_CODEC_CAP_INIT_CLEANUP,
+    .caps_internal  = FF_CODEC_CAP_INIT_CLEANUP,
     .p.wrapper_name = "libfdk",
 };

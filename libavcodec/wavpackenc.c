@@ -18,15 +18,16 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/attributes.h"
 #define BITSTREAM_WRITER_LE
 
 #include "libavutil/channel_layout.h"
 #include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "avcodec.h"
 #include "codec_internal.h"
 #include "encode.h"
-#include "internal.h"
 #include "put_bits.h"
 #include "bytestream.h"
 #include "wavpackenc.h"
@@ -662,8 +663,9 @@ static uint32_t log2mono(int32_t *samples, int nb_samples, int limit)
 {
     uint32_t result = 0;
     while (nb_samples--) {
-        if (log2sample(abs(*samples++), limit, &result))
+        if (log2sample(FFABSU(samples[0]), limit, &result))
             return UINT32_MAX;
+        samples++;
     }
     return result;
 }
@@ -673,9 +675,11 @@ static uint32_t log2stereo(int32_t *samples_l, int32_t *samples_r,
 {
     uint32_t result = 0;
     while (nb_samples--) {
-        if (log2sample(abs(*samples_l++), limit, &result) ||
-            log2sample(abs(*samples_r++), limit, &result))
+        if (log2sample(FFABSU(samples_l[0]), limit, &result) ||
+            log2sample(FFABSU(samples_r[0]), limit, &result))
             return UINT32_MAX;
+        samples_l++;
+        samples_r++;
     }
     return result;
 }
@@ -991,7 +995,7 @@ static void scan_word(WavPackEncodeContext *s, WvChannel *c,
         samples += nb_samples - 1;
 
     while (nb_samples--) {
-        uint32_t low, value = labs(samples[0]);
+        uint32_t low, value = FFABSU(samples[0]);
 
         if (value < GET_MED(0)) {
             DEC_MED(0);
@@ -1979,7 +1983,7 @@ static void encode_flush(WavPackEncodeContext *s)
                 put_bits(pb, 31, 0x7FFFFFFF);
                 cbits -= 31;
             } else {
-                put_bits(pb, cbits, (1 << cbits) - 1);
+                put_bits(pb, cbits, (1U << cbits) - 1);
                 cbits = 0;
             }
         } while (cbits);
@@ -2008,7 +2012,7 @@ static void encode_flush(WavPackEncodeContext *s)
                     put_bits(pb, 31, 0x7FFFFFFF);
                     cbits -= 31;
                 } else {
-                    put_bits(pb, cbits, (1 << cbits) - 1);
+                    put_bits(pb, cbits, (1U << cbits) - 1);
                     cbits = 0;
                 }
             } while (cbits);
@@ -2593,7 +2597,16 @@ static int wavpack_encode_block(WavPackEncodeContext *s,
         s->avctx->ch_layout.u.mask != AV_CH_LAYOUT_STEREO) {
         put_metadata_block(&pb, WP_ID_CHANINFO, 5);
         bytestream2_put_byte(&pb, s->avctx->ch_layout.nb_channels);
-        bytestream2_put_le32(&pb, s->avctx->ch_layout.u.mask);
+        if (s->avctx->ch_layout.u.mask >> 32)
+            bytestream2_put_le32(&pb, 0);
+        else
+            bytestream2_put_le32(&pb, s->avctx->ch_layout.u.mask);
+        bytestream2_put_byte(&pb, 0);
+    } else if (s->flags & WV_INITIAL_BLOCK &&
+               s->avctx->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC) {
+        put_metadata_block(&pb, WP_ID_CHANINFO, 5);
+        bytestream2_put_byte(&pb, s->avctx->ch_layout.nb_channels);
+        bytestream2_put_le32(&pb, 0);
         bytestream2_put_byte(&pb, 0);
     }
 
@@ -2825,7 +2838,7 @@ static void fill_buffer(WavPackEncodeContext *s,
 
     switch (s->avctx->sample_fmt) {
     case AV_SAMPLE_FMT_U8P:
-        COPY_SAMPLES(int8_t, 0x80, 0);
+        COPY_SAMPLES(uint8_t, 0x80, 0);
         break;
     case AV_SAMPLE_FMT_S16P:
         COPY_SAMPLES(int16_t, 0, 0);
@@ -2835,6 +2848,7 @@ static void fill_buffer(WavPackEncodeContext *s,
             COPY_SAMPLES(int32_t, 0, 8);
             break;
         }
+        av_fallthrough;
     case AV_SAMPLE_FMT_FLTP:
         memcpy(dst, src, nb_samples * 4);
     }
@@ -2905,9 +2919,7 @@ static int wavpack_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
     }
     s->sample_index += frame->nb_samples;
 
-    avpkt->pts      = frame->pts;
     avpkt->size     = buf - avpkt->data;
-    avpkt->duration = ff_samples_to_time_base(avctx, frame->nb_samples);
     *got_packet_ptr = 1;
     return 0;
 }
@@ -2963,19 +2975,16 @@ static const AVClass wavpack_encoder_class = {
 
 const FFCodec ff_wavpack_encoder = {
     .p.name         = "wavpack",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("WavPack"),
+    CODEC_LONG_NAME("WavPack"),
     .p.type         = AVMEDIA_TYPE_AUDIO,
     .p.id           = AV_CODEC_ID_WAVPACK,
+    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_SMALL_LAST_FRAME |
+                      AV_CODEC_CAP_ENCODER_REORDERED_OPAQUE,
     .priv_data_size = sizeof(WavPackEncodeContext),
     .p.priv_class   = &wavpack_encoder_class,
     .init           = wavpack_encode_init,
     FF_CODEC_ENCODE_CB(wavpack_encode_frame),
     .close          = wavpack_encode_close,
-    .p.capabilities = AV_CODEC_CAP_SMALL_LAST_FRAME,
-    .p.sample_fmts  = (const enum AVSampleFormat[]){ AV_SAMPLE_FMT_U8P,
-                                                     AV_SAMPLE_FMT_S16P,
-                                                     AV_SAMPLE_FMT_S32P,
-                                                     AV_SAMPLE_FMT_FLTP,
-                                                     AV_SAMPLE_FMT_NONE },
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
+    CODEC_SAMPLEFMTS(AV_SAMPLE_FMT_U8P,  AV_SAMPLE_FMT_S16P,
+                     AV_SAMPLE_FMT_S32P, AV_SAMPLE_FMT_FLTP),
 };

@@ -25,10 +25,13 @@
  * @author Peter Ross <pross@xvid.org>
  */
 
+#include "libavutil/attributes.h"
 #include "libavutil/channel_layout.h"
 #include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 
 #include "avformat.h"
+#include "demux.h"
 #include "internal.h"
 
 #define JV_PREAMBLE_SIZE 5
@@ -180,6 +183,7 @@ static int read_packet(AVFormatContext *s, AVPacket *pkt)
                 pkt->flags       |= AV_PKT_FLAG_KEY;
                 return 0;
             }
+            av_fallthrough;
         case JV_VIDEO:
             jv->state++;
             if (jvf->video_size || jvf->palette_size) {
@@ -204,6 +208,7 @@ static int read_packet(AVFormatContext *s, AVPacket *pkt)
                     pkt->flags |= AV_PKT_FLAG_KEY;
                 return 0;
             }
+            av_fallthrough;
         case JV_PADDING:
             avio_skip(pb, FFMAX(e->size - jvf->audio_size - jvf->video_size
                                         - jvf->palette_size, 0));
@@ -215,7 +220,7 @@ static int read_packet(AVFormatContext *s, AVPacket *pkt)
     if (s->pb->eof_reached)
         return AVERROR_EOF;
 
-    return AVERROR(EIO);
+    return AVERROR_INVALIDDATA;
 }
 
 static int read_seek(AVFormatContext *s, int stream_index,
@@ -250,11 +255,11 @@ static int read_seek(AVFormatContext *s, int stream_index,
     return 0;
 }
 
-const AVInputFormat ff_jv_demuxer = {
-    .name           = "jv",
-    .long_name      = NULL_IF_CONFIG_SMALL("Bitmap Brothers JV"),
+const FFInputFormat ff_jv_demuxer = {
+    .p.name         = "jv",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Bitmap Brothers JV"),
     .priv_data_size = sizeof(JVDemuxContext),
-    .flags_internal = FF_FMT_INIT_CLEANUP,
+    .flags_internal = FF_INFMT_FLAG_INIT_CLEANUP,
     .read_probe     = read_probe,
     .read_header    = read_header,
     .read_packet    = read_packet,

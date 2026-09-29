@@ -20,12 +20,12 @@
 
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/samplefmt.h"
 #include "avfilter.h"
 #include "audio.h"
 #include "filters.h"
-#include "internal.h"
 
 typedef struct AudioEchoContext {
     const AVClass *class;
@@ -136,11 +136,11 @@ static av_cold int init(AVFilterContext *ctx)
         return AVERROR(ENOMEM);
 
     for (i = 0; i < nb_delays; i++) {
-        if (s->delay[i] <= 0 || s->delay[i] > 90000) {
+        if (!(s->delay[i] > 0 && s->delay[i] <= 90000)) {
             av_log(ctx, AV_LOG_ERROR, "delay[%d]: %f is out of allowed range: (0, 90000]\n", i, s->delay[i]);
             return AVERROR(EINVAL);
         }
-        if (s->decay[i] <= 0 || s->decay[i] > 1) {
+        if (!(s->decay[i] > 0 && s->decay[i] <= 1)) {
             av_log(ctx, AV_LOG_ERROR, "decay[%d]: %f is out of allowed range: (0, 1]\n", i, s->decay[i]);
             return AVERROR(EINVAL);
         }
@@ -328,13 +328,6 @@ static int activate(AVFilterContext *ctx)
     return request_frame(outlink);
 }
 
-static const AVFilterPad aecho_inputs[] = {
-    {
-        .name         = "default",
-        .type         = AVMEDIA_TYPE_AUDIO,
-    },
-};
-
 static const AVFilterPad aecho_outputs[] = {
     {
         .name          = "default",
@@ -343,15 +336,15 @@ static const AVFilterPad aecho_outputs[] = {
     },
 };
 
-const AVFilter ff_af_aecho = {
-    .name          = "aecho",
-    .description   = NULL_IF_CONFIG_SMALL("Add echoing to the audio."),
+const FFFilter ff_af_aecho = {
+    .p.name        = "aecho",
+    .p.description = NULL_IF_CONFIG_SMALL("Add echoing to the audio."),
+    .p.priv_class  = &aecho_class,
     .priv_size     = sizeof(AudioEchoContext),
-    .priv_class    = &aecho_class,
     .init          = init,
     .activate      = activate,
     .uninit        = uninit,
-    FILTER_INPUTS(aecho_inputs),
+    FILTER_INPUTS(ff_audio_default_filterpad),
     FILTER_OUTPUTS(aecho_outputs),
     FILTER_SAMPLEFMTS(AV_SAMPLE_FMT_S16P, AV_SAMPLE_FMT_S32P,
                       AV_SAMPLE_FMT_FLTP, AV_SAMPLE_FMT_DBLP),
