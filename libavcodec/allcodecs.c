@@ -775,6 +775,8 @@ extern const FFCodec ff_libilbc_encoder;
 extern const FFCodec ff_libilbc_decoder;
 extern const FFCodec ff_libjxl_decoder;
 extern const FFCodec ff_libjxl_encoder;
+extern const FFCodec ff_libkdu_encoder;
+extern const FFCodec ff_libkdu_decoder;
 extern const FFCodec ff_liblc3_encoder;
 extern const FFCodec ff_liblc3_decoder;
 extern const FFCodec ff_libmp3lame_encoder;
