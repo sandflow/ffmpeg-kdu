@@ -1,0 +1,170 @@
+# FFmpeg-KDU
+
+## Overview
+
+FFmpeg-KDU is a patchset against FFmpeg that adds support for the
+[Kakadu SDK](https://kakadusoftware.com/) through the
+[kduc](https://github.com/sandflow/kduc).
+
+## Branches
+
+| Branch               | FFmpeg                                                 | Tested with  |
+|----------------------|--------------------------------------------------------|--------------|
+| `integration-master` | [master](https://github.com/FFmpeg/FFmpeg/tree/master) | `74962818a8` |
+| `integration-9.0`    | 9.0                                                    | `n9.0.2`     |
+| `integration-8.1`    | 8.1                                                    | `n8.1.3`     |
+| `integration-7.1`    | 7.1                                                    | `n7.1.5`     |
+| `integration-6.1`    | 6.1                                                    | `n6.1.6`     |
+| `integration`        | 5.1                                                    | `n5.1.10`    |
+
+The patchset was tested with Kakadu SDK 8.6.1.
+
+`integration-master` contains the complete history of the patchset for FFmpeg 6.1
+and later. Modifications to the patchset are developed on branches created
+from `integration-master`.
+
+`integration` contains the complete history of the patchset for FFmpeg 5.1.
+
+## How to apply FFmpeg-KDU
+
+### FFmpeg releases
+
+Check out the branch for the FFmpeg release, which contains the release with
+the patchset applied as a single commit, e.g. for FFmpeg 8.1:
+
+```sh
+git clone -b integration-8.1 https://github.com/sandflow/ffmpeg-kdu.git
+```
+
+The release branches are generated from `integration-master`. The
+`integration-6.1` and `integration-7.1` branches additionally define the
+`CODEC_PIXFMTS` macro, which FFmpeg added in 8.0.
+
+### FFmpeg master
+
+`integration-master` is intended to be squashed merged onto
+[FFmpeg master](https://github.com/FFmpeg/FFmpeg/tree/master):
+
+```sh
+git clone https://github.com/FFmpeg/FFmpeg.git
+cd FFmpeg
+git remote add ffmpeg-kdu https://github.com/sandflow/ffmpeg-kdu.git
+git fetch ffmpeg-kdu integration-master:kdu-integration
+git checkout -b master-kdu origin/master
+git merge --squash kdu-integration
+```
+
+### FFmpeg 5.1
+
+`integration` is intended to be squashed merged onto
+[FFmpeg 5.1](https://github.com/FFmpeg/FFmpeg/tree/n5.1.10):
+
+```sh
+git clone https://github.com/FFmpeg/FFmpeg.git
+cd FFmpeg
+git remote add ffmpeg-kdu https://github.com/sandflow/ffmpeg-kdu.git
+git fetch ffmpeg-kdu integration:kdu-integration
+git checkout -b n5.1-kdu n5.1.10
+git merge --squash kdu-integration
+```
+
+## How to build
+
+Install the prerequisites listed below, then configure FFmpeg to include :
+
+`./configure --enable-libkdu --extra-cflags="-I<path to kduc header files>" --extra-ldflags="-L<path to kduc library>"`
+
+See the [FFmpeg Compilation Guide](https://trac.ffmpeg.org/wiki/CompilationGuide).
+
+## Usage
+
+### Relationship with Kakadu demo apps
+
+The patchset roughly mimics the `kdu_compress` and `kdu_expand` CLI applications
+provided with the Kakadu SDK.
+
+For example:
+
+`kdu_compress -i image.png Cmodes=HT Creversible=yes -o image.j2c`
+
+becomes
+
+`ffmpeg -i image.png -c:v libkdu -kdu_params "Cmodes=HT Creversible=yes" image.j2c`
+
+### Encoding
+
+```sh
+ffmpeg -i <input file> -c:v libkdu [kdu_option_1, kdu_option_2, ...] [-kdu_params "param_1 param_2 ..."] <output file>
+
+  kdu_options: ffmpeg -h encoder=libkdu
+
+  kdu_params: see kdu_params.h in the Kakadu SDK documentation.
+```
+
+### Decoding
+
+```sh
+ffmpeg -c:v libkdu [kdu_option_1, kdu_option_2, ...] [-kdu_params "param_1 param_2 ..."] -i <input file> <output file>
+
+  kdu_options: ffmpeg -h decoder=libkdu
+  
+  kdu_params: see kdu_params.h in the Kakadu SDK documentation.
+```
+
+## Tests
+
+The script at [.github/tests.sh](./.github/tests.sh) can be used for smoke
+testing:
+
+`./.github/tests.sh <path to source image dir>`
+
+where the source images can be retrieved at `s3://ffmpeg-kdu/tests/`.
+
+## Directory layout
+
+The layout is identical to `upstream` with the following exception:
+
+* `.github` for files specific to FFmpeg-KDU
+
+The `.github` directory is not required to add support for the Kakadu SDK to
+FFmpeg.
+
+## Prerequisites
+
+### Kakadu SDK
+
+The [Kakadu SDK](https://kakadusoftware.com/) must be installed. Below is a
+sample script for Ubuntu:
+
+```sh
+BUILD_DIR=~/tmp/kdu # <--- replace with a temporary location
+KDU_SDK=v8_2_1-01908E # <--- replace with the version of the Kakadu SDK you are using
+KDU_SDK_ZIP=~/downloads/$KDU_SDK.zip # <--- replace with the path to the Kakadu SDK zip
+mkdir -p $BUILD_DIR
+cd $BUILD_DIR
+unzip $KDU_SDK_ZIP
+cd $BUILD_DIR/$KDU_SDK
+mv srclib_ht srclib_ht_noopt
+cp -r altlib_ht_opt srclib_ht
+cd $BUILD_DIR/$KDU_SDK/make
+make CXXFLAGS=-DFBC_ENABLED -f Makefile-Linux-x86-64-gcc all_but_jni
+cd $BUILD_DIR/$KDU_SDK
+sudo cp bin/Linux-x86-64-gcc/* /usr/local/bin/
+sudo cp lib/Linux-x86-64-gcc/* /usr/local/lib/
+sudo ldconfig
+sudo mkdir -p /usr/local/include/kakadu
+sudo cp -r managed/all_includes/* /usr/local/include/kakadu
+```
+
+### kduc
+
+The [kduc](https://github.com/sandflow/kduc) library must be installed and
+points to the Kakadu SDK libraries generated by the step above.
+
+## License
+
+The patchset is licensed under the [GNU Lesser General Public License version
+2.1](https://opensource.org/licenses/LGPL-2.1).
+
+The [Kakadu SDK](https://kakadusoftware.com/) is *NOT* free software. Please
+contact [Kakadu Software](https://kakadusoftware.com/) for more information.
