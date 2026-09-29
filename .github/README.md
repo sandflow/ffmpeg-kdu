@@ -9,14 +9,14 @@ FFmpeg-KDU is a patchset against FFmpeg that adds support for the
 ## How to apply FFmpeg-KDU
 
 The `integration` branch contains the complete history of the patchset and is
-intended to be squashed merged onto the [FFMPEG 5.1](https://github.com/FFmpeg/FFmpeg/tree/n5.1.10):
+intended to be squashed merged onto [FFmpeg master](https://github.com/FFmpeg/FFmpeg/tree/master):
 
 ```sh
 git clone https://github.com/FFmpeg/FFmpeg.git
 cd FFmpeg
 git remote add ffmpeg-kdu https://github.com/sandflow/ffmpeg-kdu.git
 git fetch ffmpeg-kdu integration:kdu-integration
-git checkout -b n5.1-kdu n5.1.10
+git checkout -b master-kdu origin/master
 git merge --squash kdu-integration
 ```
 

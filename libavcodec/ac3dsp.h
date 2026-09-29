@@ -22,6 +22,7 @@
 #ifndef AVCODEC_AC3DSP_H
 #define AVCODEC_AC3DSP_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /**
@@ -47,13 +48,13 @@ typedef struct AC3DSPContext {
      * [-(1<<24),(1<<24)]
      *
      * @param dst destination array of int32_t.
-     *            constraints: 16-byte aligned
+     *            constraints: 32-byte aligned
      * @param src source array of float.
-     *            constraints: 16-byte aligned
+     *            constraints: 32-byte aligned
      * @param len number of elements to convert.
      *            constraints: multiple of 32 greater than zero
      */
-    void (*float_to_fixed24)(int32_t *dst, const float *src, unsigned int len);
+    void (*float_to_fixed24)(int32_t *dst, const float *src, size_t len);
 
     /**
      * Calculate bit allocation pointers.
@@ -81,7 +82,7 @@ typedef struct AC3DSPContext {
      * @param[in]  bap        array of bap, pointing to start coef bin
      * @param[in]  len        number of elements to process
      */
-    void (*update_bap_counts)(uint16_t mant_cnt[16], uint8_t *bap, int len);
+    void (*update_bap_counts)(uint16_t mant_cnt[16], const uint8_t bap[], int len);
 
     /**
      * Calculate the number of bits needed to encode a set of mantissas.
@@ -89,9 +90,9 @@ typedef struct AC3DSPContext {
      * @param[in] mant_cnt    bap counts for all blocks
      * @return                mantissa bit count
      */
-    int (*compute_mantissa_size)(uint16_t mant_cnt[6][16]);
+    int (*compute_mantissa_size)(const uint16_t mant_cnt[6][16]);
 
-    void (*extract_exponents)(uint8_t *exp, int32_t *coef, int nb_coefs);
+    void (*extract_exponents)(uint8_t *exp, const int32_t *coef, int nb_coefs);
 
     void (*sum_square_butterfly_int32)(int64_t sum[4], const int32_t *coef0,
                                        const int32_t *coef1, int len);
@@ -105,10 +106,12 @@ typedef struct AC3DSPContext {
     void (*downmix_fixed)(int32_t **samples, int16_t **matrix, int len);
 } AC3DSPContext;
 
-void ff_ac3dsp_init    (AC3DSPContext *c, int bit_exact);
-void ff_ac3dsp_init_arm(AC3DSPContext *c, int bit_exact);
-void ff_ac3dsp_init_x86(AC3DSPContext *c, int bit_exact);
-void ff_ac3dsp_init_mips(AC3DSPContext *c, int bit_exact);
+void ff_ac3dsp_init(AC3DSPContext *c);
+void ff_ac3dsp_init_aarch64(AC3DSPContext *c);
+void ff_ac3dsp_init_arm(AC3DSPContext *c);
+void ff_ac3dsp_init_x86(AC3DSPContext *c);
+void ff_ac3dsp_init_mips(AC3DSPContext *c);
+void ff_ac3dsp_init_riscv(AC3DSPContext *c);
 
 void ff_ac3dsp_downmix(AC3DSPContext *c, float **samples, float **matrix,
                        int out_ch, int in_ch, int len);

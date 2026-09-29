@@ -42,8 +42,8 @@ SECTION .text
 ;-----------------------------------------------------------------------------
 
 %macro AC3_EXPONENT_MIN 0
-cglobal ac3_exponent_min, 3, 4, 2, exp, reuse_blks, expn, offset
-    shl  reuse_blksq, 8
+cglobal ac3_exponent_min, 3, 4, 1, exp, reuse_blks, expn, offset
+    shl  reuse_blksd, 8
     jz .end
     LOOP_ALIGN
 .nextexp:
@@ -52,25 +52,18 @@ cglobal ac3_exponent_min, 3, 4, 2, exp, reuse_blks, expn, offset
     sub      offsetq, 256
     LOOP_ALIGN
 .nextblk:
-    PMINUB        m0, [expq+offsetq], m1
+    pminub        m0, [expq+offsetq]
     sub      offsetq, 256
     jae .nextblk
     mova      [expq], m0
     add         expq, mmsize
-    sub        expnq, mmsize
+    sub        expnd, mmsize
     jg .nextexp
 .end:
-    REP_RET
+    RET
 %endmacro
 
-%define LOOP_ALIGN
-INIT_MMX mmx
-AC3_EXPONENT_MIN
-%if HAVE_MMXEXT_EXTERNAL
 %define LOOP_ALIGN ALIGN 16
-INIT_MMX mmxext
-AC3_EXPONENT_MIN
-%endif
 %if HAVE_SSE2_EXTERNAL
 INIT_XMM sse2
 AC3_EXPONENT_MIN
@@ -78,76 +71,26 @@ AC3_EXPONENT_MIN
 %undef LOOP_ALIGN
 
 ;-----------------------------------------------------------------------------
-; void ff_float_to_fixed24(int32_t *dst, const float *src, unsigned int len)
+; void ff_float_to_fixed24(int32_t *dst, const float *src, size_t len)
 ;-----------------------------------------------------------------------------
-
-; The 3DNow! version is not bit-identical because pf2id uses truncation rather
-; than round-to-nearest.
-INIT_MMX 3dnow
-cglobal float_to_fixed24, 3, 3, 0, dst, src, len
-    movq   m0, [pf_1_24]
-.loop:
-    movq   m1, [srcq   ]
-    movq   m2, [srcq+8 ]
-    movq   m3, [srcq+16]
-    movq   m4, [srcq+24]
-    pfmul  m1, m0
-    pfmul  m2, m0
-    pfmul  m3, m0
-    pfmul  m4, m0
-    pf2id  m1, m1
-    pf2id  m2, m2
-    pf2id  m3, m3
-    pf2id  m4, m4
-    movq  [dstq   ], m1
-    movq  [dstq+8 ], m2
-    movq  [dstq+16], m3
-    movq  [dstq+24], m4
-    add  srcq, 32
-    add  dstq, 32
-    sub  lend, 8
-    ja .loop
-    femms
-    RET
-
-INIT_XMM sse
-cglobal float_to_fixed24, 3, 3, 3, dst, src, len
-    movaps     m0, [pf_1_24]
-.loop:
-    movaps     m1, [srcq   ]
-    movaps     m2, [srcq+16]
-    mulps      m1, m0
-    mulps      m2, m0
-    cvtps2pi  mm0, m1
-    movhlps    m1, m1
-    cvtps2pi  mm1, m1
-    cvtps2pi  mm2, m2
-    movhlps    m2, m2
-    cvtps2pi  mm3, m2
-    movq  [dstq   ], mm0
-    movq  [dstq+ 8], mm1
-    movq  [dstq+16], mm2
-    movq  [dstq+24], mm3
-    add      srcq, 32
-    add      dstq, 32
-    sub      lend, 8
-    ja .loop
-    emms
-    RET
 
 INIT_XMM sse2
 cglobal float_to_fixed24, 3, 3, 9, dst, src, len
     movaps     m0, [pf_1_24]
+    shl      lenq, 2
+    add      srcq, lenq
+    add      dstq, lenq
+    neg      lenq
 .loop:
-    movaps     m1, [srcq    ]
-    movaps     m2, [srcq+16 ]
-    movaps     m3, [srcq+32 ]
-    movaps     m4, [srcq+48 ]
+    movaps     m1, [srcq+lenq    ]
+    movaps     m2, [srcq+lenq+16 ]
+    movaps     m3, [srcq+lenq+32 ]
+    movaps     m4, [srcq+lenq+48 ]
 %ifdef m8
-    movaps     m5, [srcq+64 ]
-    movaps     m6, [srcq+80 ]
-    movaps     m7, [srcq+96 ]
-    movaps     m8, [srcq+112]
+    movaps     m5, [srcq+lenq+64 ]
+    movaps     m6, [srcq+lenq+80 ]
+    movaps     m7, [srcq+lenq+96 ]
+    movaps     m8, [srcq+lenq+112]
 %endif
     mulps      m1, m0
     mulps      m2, m0
@@ -169,76 +112,87 @@ cglobal float_to_fixed24, 3, 3, 9, dst, src, len
     cvtps2dq   m7, m7
     cvtps2dq   m8, m8
 %endif
-    movdqa  [dstq    ], m1
-    movdqa  [dstq+16 ], m2
-    movdqa  [dstq+32 ], m3
-    movdqa  [dstq+48 ], m4
+    movdqa  [dstq+lenq    ], m1
+    movdqa  [dstq+lenq+16 ], m2
+    movdqa  [dstq+lenq+32 ], m3
+    movdqa  [dstq+lenq+48 ], m4
 %ifdef m8
-    movdqa  [dstq+64 ], m5
-    movdqa  [dstq+80 ], m6
-    movdqa  [dstq+96 ], m7
-    movdqa  [dstq+112], m8
-    add      srcq, 128
-    add      dstq, 128
-    sub      lenq, 32
+    movdqa  [dstq+lenq+64 ], m5
+    movdqa  [dstq+lenq+80 ], m6
+    movdqa  [dstq+lenq+96 ], m7
+    movdqa  [dstq+lenq+112], m8
+    add      lenq, 128
 %else
-    add      srcq, 64
-    add      dstq, 64
-    sub      lenq, 16
+    add      lenq, 64
 %endif
-    ja .loop
-    REP_RET
+    jl .loop
+    RET
+
+INIT_YMM avx
+cglobal float_to_fixed24, 3, 3, 5, dst, src, len
+    vbroadcastf128 m0, [pf_1_24]
+    shl      lenq, 2
+    add      srcq, lenq
+    add      dstq, lenq
+    neg      lenq
+.loop:
+    mulps      m1, m0, [srcq+lenq+mmsize*0]
+    mulps      m2, m0, [srcq+lenq+mmsize*1]
+    mulps      m3, m0, [srcq+lenq+mmsize*2]
+    mulps      m4, m0, [srcq+lenq+mmsize*3]
+    cvtps2dq   m1, m1
+    cvtps2dq   m2, m2
+    cvtps2dq   m3, m3
+    cvtps2dq   m4, m4
+    mova  [dstq+lenq+mmsize*0], m1
+    mova  [dstq+lenq+mmsize*1], m2
+    mova  [dstq+lenq+mmsize*2], m3
+    mova  [dstq+lenq+mmsize*3], m4
+    add      lenq, mmsize*4
+    jl .loop
+    RET
 
 ;------------------------------------------------------------------------------
-; int ff_ac3_compute_mantissa_size(uint16_t mant_cnt[6][16])
+; int ff_ac3_compute_mantissa_size(const uint16_t mant_cnt[6][16])
 ;------------------------------------------------------------------------------
-
-%macro PHADDD4 2 ; xmm src, xmm tmp
-    movhlps  %2, %1
-    paddd    %1, %2
-    pshufd   %2, %1, 0x1
-    paddd    %1, %2
-%endmacro
 
 INIT_XMM sse2
-cglobal ac3_compute_mantissa_size, 1, 2, 4, mant_cnt, sum
+cglobal ac3_compute_mantissa_size, 1, 1, 5, mant_cnt
     movdqa      m0, [mant_cntq      ]
     movdqa      m1, [mant_cntq+ 1*16]
+    movdqa      m4, [pw_bap_mul1]
     paddw       m0, [mant_cntq+ 2*16]
     paddw       m1, [mant_cntq+ 3*16]
+    movq        m2, [mant_cntq     +2]
     paddw       m0, [mant_cntq+ 4*16]
     paddw       m1, [mant_cntq+ 5*16]
+    movhps      m2, [mant_cntq+1*32+2]
     paddw       m0, [mant_cntq+ 6*16]
     paddw       m1, [mant_cntq+ 7*16]
     paddw       m0, [mant_cntq+ 8*16]
+    pmulhuw     m2, m4
     paddw       m1, [mant_cntq+ 9*16]
     paddw       m0, [mant_cntq+10*16]
     paddw       m1, [mant_cntq+11*16]
     pmaddwd     m0, [ac3_bap_bits   ]
     pmaddwd     m1, [ac3_bap_bits+16]
     paddd       m0, m1
-    PHADDD4     m0, m1
-    movd      sumd, m0
-    movdqa      m3, [pw_bap_mul1]
-    movhpd      m0, [mant_cntq     +2]
-    movlpd      m0, [mant_cntq+1*32+2]
-    movhpd      m1, [mant_cntq+2*32+2]
-    movlpd      m1, [mant_cntq+3*32+2]
-    movhpd      m2, [mant_cntq+4*32+2]
-    movlpd      m2, [mant_cntq+5*32+2]
-    pmulhuw     m0, m3
-    pmulhuw     m1, m3
-    pmulhuw     m2, m3
-    paddusw     m0, m1
-    paddusw     m0, m2
-    pmaddwd     m0, [pw_bap_mul2]
-    PHADDD4     m0, m1
+    movq        m1, [mant_cntq+2*32+2]
+    movhps      m1, [mant_cntq+3*32+2]
+    movq        m3, [mant_cntq+4*32+2]
+    movhps      m3, [mant_cntq+5*32+2]
+    pmulhuw     m1, m4
+    pmulhuw     m3, m4
+    paddw       m1, m2
+    paddw       m1, m3
+    pmaddwd     m1, [pw_bap_mul2]
+    paddd       m0, m1
+    HADDD       m0, m1
     movd       eax, m0
-    add        eax, sumd
     RET
 
 ;------------------------------------------------------------------------------
-; void ff_ac3_extract_exponents(uint8_t *exp, int32_t *coef, int nb_coefs)
+; void ff_ac3_extract_exponents(uint8_t *exp, const int32_t *coef, int nb_coefs)
 ;------------------------------------------------------------------------------
 
 %macro PABSD 1-2 ; src/dst, unused
@@ -254,23 +208,27 @@ cglobal ac3_compute_mantissa_size, 1, 2, 4, mant_cnt, sum
 
 %macro AC3_EXTRACT_EXPONENTS 0
 cglobal ac3_extract_exponents, 3, 3, 4, exp, coef, len
+    movsxdifnidn lenq, lend
     add     expq, lenq
     lea    coefq, [coefq+4*lenq]
     neg     lenq
     mova      m2, [pd_1]
     mova      m3, [pd_151]
 .loop:
+%if cpuflag(ssse3)
+    pabsd     m0, [coefq+4*lenq]
+%else
     ; move 4 32-bit coefs to xmm0
     mova      m0, [coefq+4*lenq]
     ; absolute value
     PABSD     m0, m1
+%endif
     ; convert to float and extract exponents
     pslld     m0, 1
     por       m0, m2
     cvtdq2ps  m1, m0
     psrld     m1, 23
-    mova      m0, m3
-    psubd     m0, m1
+    psubd     m0, m3, m1
     ; move the lowest byte in each of 4 dwords to the low dword
     ; NOTE: We cannot just extract the low bytes with pshufb because the dword
     ;       result for 16777215 is -1 due to float inaccuracy. Using packuswb
@@ -281,7 +239,7 @@ cglobal ac3_extract_exponents, 3, 3, 4, exp, coef, len
 
     add     lenq, 4
     jl .loop
-    REP_RET
+    RET
 %endmacro
 
 %if HAVE_SSE2_EXTERNAL

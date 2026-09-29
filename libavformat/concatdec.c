@@ -18,13 +18,16 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include "libavutil/attributes_internal.h"
 #include "libavutil/avstring.h"
 #include "libavutil/avassert.h"
 #include "libavutil/bprint.h"
 #include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/timestamp.h"
+#include "libavcodec/codec_desc.h"
 #include "libavcodec/bsf.h"
 #include "avformat.h"
 #include "avio_internal.h"
@@ -70,6 +73,7 @@ typedef struct {
     ConcatMatchMode stream_match_mode;
     unsigned auto_convert;
     int segment_time_metadata;
+    int chapter_per_file;
 } ConcatContext;
 
 static int concat_probe(const AVProbeData *probe)
@@ -180,8 +184,9 @@ static int copy_stream_props(AVStream *st, AVStream *source_st)
             if (ret < 0)
                 return ret;
         }
-        memcpy(st->codecpar->extradata, source_st->codecpar->extradata,
-               source_st->codecpar->extradata_size);
+        if (source_st->codecpar->extradata_size)
+            memcpy(st->codecpar->extradata, source_st->codecpar->extradata,
+                   source_st->codecpar->extradata_size);
         return 0;
     }
     if ((ret = avcodec_parameters_copy(st->codecpar, source_st->codecpar)) < 0)
@@ -192,7 +197,6 @@ static int copy_stream_props(AVStream *st, AVStream *source_st)
     avpriv_set_pts_info(st, 64, source_st->time_base.num, source_st->time_base.den);
 
     av_dict_copy(&st->metadata, source_st->metadata, 0);
-    ff_stream_side_data_copy(st, source_st);
     return 0;
 }
 
@@ -322,15 +326,16 @@ static int64_t get_best_effort_duration(ConcatFile *file, AVFormatContext *avf)
     if (file->user_duration != AV_NOPTS_VALUE)
         return file->user_duration;
     if (file->outpoint != AV_NOPTS_VALUE)
-        return file->outpoint - file->file_inpoint;
+        return av_sat_sub64(file->outpoint, file->file_inpoint);
     if (avf->duration > 0)
-        return avf->duration - (file->file_inpoint - file->file_start_time);
+        return av_sat_sub64(avf->duration, file->file_inpoint - file->file_start_time);
     if (file->next_dts != AV_NOPTS_VALUE)
         return file->next_dts - file->file_inpoint;
     return AV_NOPTS_VALUE;
 }
 
-static int open_file(AVFormatContext *avf, unsigned fileno)
+/* opens the file and places it on the timeline, leaving the output streams alone */
+static int probe_file(AVFormatContext *avf, unsigned fileno)
 {
     ConcatContext *cat = avf->priv_data;
     ConcatFile *file = &cat->files[fileno];
@@ -373,7 +378,17 @@ static int open_file(AVFormatContext *avf, unsigned fileno)
     file->file_start_time = (cat->avf->start_time == AV_NOPTS_VALUE) ? 0 : cat->avf->start_time;
     file->file_inpoint = (file->inpoint == AV_NOPTS_VALUE) ? file->file_start_time : file->inpoint;
     file->duration = get_best_effort_duration(file, cat->avf);
+    return 0;
+}
 
+static int open_file(AVFormatContext *avf, unsigned fileno)
+{
+    ConcatContext *cat = avf->priv_data;
+    ConcatFile *file = &cat->files[fileno];
+    int ret = probe_file(avf, fileno);
+
+    if (ret < 0)
+        return ret;
     if (cat->segment_time_metadata) {
         av_dict_set_int(&file->metadata, "lavf.concatdec.start_time", file->start_time, 0);
         if (file->duration != AV_NOPTS_VALUE)
@@ -417,7 +432,7 @@ static int concat_read_close(AVFormatContext *avf)
 
 typedef struct ParseSyntax {
     const char *keyword;
-    char args[MAX_ARGS];
+    attribute_nonstring char args[MAX_ARGS];
     uint8_t flags;
 } ParseSyntax;
 
@@ -637,11 +652,64 @@ static int concat_parse_script(AVFormatContext *avf)
         }
     }
 
+    if (!file) {
+        ret = AVERROR_INVALIDDATA;
+        goto fail;
+    }
+
+    if (file->inpoint != AV_NOPTS_VALUE && file->outpoint != AV_NOPTS_VALUE) {
+        if (file->inpoint  > file->outpoint ||
+            file->outpoint - (uint64_t)file->inpoint > INT64_MAX)
+            ret = AVERROR_INVALIDDATA;
+    }
+
 fail:
     for (arg = 0; arg < MAX_ARGS; arg++)
         av_freep(&arg_str[arg]);
     av_bprint_finalize(&bp, NULL);
     return ret == AVERROR_EOF ? 0 : ret;
+}
+
+static int compare_chapter_starts(const void *a, const void *b)
+{
+    const AVChapter *ca = *(const AVChapter *const *)a, *cb = *(const AVChapter *const *)b;
+
+    return av_compare_ts(ca->start, ca->time_base, cb->start, cb->time_base);
+}
+
+static int add_file_chapters(AVFormatContext *avf)
+{
+    ConcatContext *cat = avf->priv_data;
+    int64_t id = 0;
+
+    for (unsigned i = 0; i < avf->nb_chapters; i++)
+        id = FFMAX(id, av_sat_add64(avf->chapters[i]->id, 1));
+    for (unsigned i = 0; i < cat->nb_files; i++) {
+        ConcatFile *file = &cat->files[i];
+        AVDictionaryEntry *title;
+        AVChapter *chapter;
+        int64_t end = AV_NOPTS_VALUE;
+        int ret = probe_file(avf, i);
+
+        if (ret < 0)
+            return ret;
+        if (file->duration != AV_NOPTS_VALUE)
+            end = av_sat_add64(file->start_time, file->duration);
+        if (end == INT64_MAX || id == INT64_MAX || (end != AV_NOPTS_VALUE && end < file->start_time))
+            return AVERROR_INVALIDDATA;
+        file->user_duration = file->duration;
+        title = av_dict_get(cat->avf->metadata, "title", NULL, 0);
+        chapter = avpriv_new_chapter(avf, id++, AV_TIME_BASE_Q, file->start_time, end,
+                                     title ? title->value : av_basename(file->url));
+        if (!chapter || (ret = av_dict_copy(&chapter->metadata, cat->avf->metadata, AV_DICT_DONT_OVERWRITE)) < 0)
+            return chapter ? ret : AVERROR(ENOMEM);
+        if (end == AV_NOPTS_VALUE) {
+            av_log(avf, AV_LOG_WARNING, "Duration of '%s' unknown, no chapters for the files after it\n", file->url);
+            break;
+        }
+    }
+    qsort(avf->chapters, avf->nb_chapters, sizeof(*avf->chapters), compare_chapter_starts);
+    return 0;
 }
 
 static int concat_read_header(AVFormatContext *avf)
@@ -658,6 +726,10 @@ static int concat_read_header(AVFormatContext *avf)
         av_log(avf, AV_LOG_ERROR, "No files to concat\n");
         return AVERROR_INVALIDDATA;
     }
+    cat->stream_match_mode = avf->nb_streams ? MATCH_EXACT_ID :
+                                               MATCH_ONE_TO_ONE;
+    if (cat->chapter_per_file && (ret = add_file_chapters(avf)) < 0)
+        return ret;
 
     for (i = 0; i < cat->nb_files; i++) {
         if (cat->files[i].start_time == AV_NOPTS_VALUE)
@@ -665,11 +737,15 @@ static int concat_read_header(AVFormatContext *avf)
         else
             time = cat->files[i].start_time;
         if (cat->files[i].user_duration == AV_NOPTS_VALUE) {
-            if (cat->files[i].inpoint == AV_NOPTS_VALUE || cat->files[i].outpoint == AV_NOPTS_VALUE)
+            if (cat->files[i].inpoint == AV_NOPTS_VALUE || cat->files[i].outpoint == AV_NOPTS_VALUE ||
+                cat->files[i].outpoint - (uint64_t)cat->files[i].inpoint != av_sat_sub64(cat->files[i].outpoint, cat->files[i].inpoint)
+            )
                 break;
             cat->files[i].user_duration = cat->files[i].outpoint - cat->files[i].inpoint;
         }
         cat->files[i].duration = cat->files[i].user_duration;
+        if (time + (uint64_t)cat->files[i].user_duration > INT64_MAX)
+            return AVERROR_INVALIDDATA;
         time += cat->files[i].user_duration;
     }
     if (i == cat->nb_files) {
@@ -677,8 +753,6 @@ static int concat_read_header(AVFormatContext *avf)
         cat->seekable = 1;
     }
 
-    cat->stream_match_mode = avf->nb_streams ? MATCH_EXACT_ID :
-                                               MATCH_ONE_TO_ONE;
     if ((ret = open_file(avf, 0)) < 0)
         return ret;
 
@@ -922,6 +996,8 @@ static const AVOption options[] = {
       OFFSET(auto_convert), AV_OPT_TYPE_BOOL, {.i64 = 1}, 0, 1, DEC },
     { "segment_time_metadata", "output file segment start time and duration as packet metadata",
       OFFSET(segment_time_metadata), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, DEC },
+    { "chapter_per_file", "add a chapter for each file, opening them all up front to learn their durations",
+      OFFSET(chapter_per_file), AV_OPT_TYPE_BOOL, {.i64 = 0}, 0, 1, DEC },
     { NULL }
 };
 
@@ -933,15 +1009,15 @@ static const AVClass concat_class = {
 };
 
 
-const AVInputFormat ff_concat_demuxer = {
-    .name           = "concat",
-    .long_name      = NULL_IF_CONFIG_SMALL("Virtual concatenation script"),
+const FFInputFormat ff_concat_demuxer = {
+    .p.name         = "concat",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Virtual concatenation script"),
+    .p.priv_class   = &concat_class,
     .priv_data_size = sizeof(ConcatContext),
-    .flags_internal = FF_FMT_INIT_CLEANUP,
+    .flags_internal = FF_INFMT_FLAG_INIT_CLEANUP,
     .read_probe     = concat_probe,
     .read_header    = concat_read_header,
     .read_packet    = concat_read_packet,
     .read_close     = concat_read_close,
     .read_seek2     = concat_seek,
-    .priv_class     = &concat_class,
 };

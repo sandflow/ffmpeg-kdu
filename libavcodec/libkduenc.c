@@ -28,11 +28,15 @@
 
 #include "libavutil/common.h"
 #include "libavutil/imgutils.h"
+#include "libavutil/internal.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/avstring.h"
+#include "libavutil/pixdesc.h"
 
 #include "avcodec.h"
 #include "codec_internal.h"
+#include "encode.h"
 
 #include <kduc.h>
 
@@ -247,7 +251,6 @@ static int libkdu_encode_frame(AVCodecContext *avctx, AVPacket *pkt, const AVFra
     kdu_stripe_compressor *encoder;
 
     uint8_t* buffer;
-    uint8_t* pkt_data;
     int buf_sz;
     int component_bit_depth, component_height, component_width;
     int ret;
@@ -302,14 +305,9 @@ static int libkdu_encode_frame(AVCodecContext *avctx, AVPacket *pkt, const AVFra
     // Retrieve encoded data
     kdu_compressed_target_bytes(target, &buffer, &buf_sz);
 
-    pkt_data = av_malloc(buf_sz);
-    if (!pkt_data) {
-        ret = AVERROR(ENOMEM);
+    if ((ret = ff_get_encode_buffer(avctx, pkt, buf_sz, 0)) < 0)
         goto done;
-    }
-    memcpy(pkt_data, buffer, buf_sz);
-    if ((ret = av_packet_from_data(pkt, pkt_data, buf_sz)))
-        goto done;
+    memcpy(pkt->data, buffer, buf_sz);
 
     *got_packet = 1;
 
@@ -342,14 +340,14 @@ static const AVClass kakadu_encoder_class = {
 
 const FFCodec ff_libkdu_encoder = {
     .p.name         = "libkdu",
-    .p.long_name    = NULL_IF_CONFIG_SMALL("Kakadu JPEG 2000 Encoder"),
+    CODEC_LONG_NAME("Kakadu JPEG 2000 Encoder"),
     .p.type         = AVMEDIA_TYPE_VIDEO,
     .p.id           = AV_CODEC_ID_JPEG2000,
     .priv_data_size = sizeof(LibKduContext),
     .init           = libkdu_encode_init,
     FF_CODEC_ENCODE_CB(libkdu_encode_frame),
-    .p.capabilities = AV_CODEC_CAP_FRAME_THREADS,
-    .p.pix_fmts     = (const enum AVPixelFormat[]) {
+    .p.capabilities = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_FRAME_THREADS,
+    CODEC_PIXFMTS(
         AV_PIX_FMT_RGB24, AV_PIX_FMT_RGBA, AV_PIX_FMT_RGB48, AV_PIX_FMT_RGBA64,
         AV_PIX_FMT_GBR24P, AV_PIX_FMT_GBRP9, AV_PIX_FMT_GBRP10, AV_PIX_FMT_GBRP12, AV_PIX_FMT_GBRP14, AV_PIX_FMT_GBRP16,
         AV_PIX_FMT_GRAY8, AV_PIX_FMT_YA8, AV_PIX_FMT_GRAY16, AV_PIX_FMT_YA16,
@@ -365,8 +363,7 @@ const FFCodec ff_libkdu_encoder = {
         AV_PIX_FMT_YUV420P14, AV_PIX_FMT_YUV422P14, AV_PIX_FMT_YUV444P14,
         AV_PIX_FMT_YUV420P16, AV_PIX_FMT_YUV422P16, AV_PIX_FMT_YUV444P16,
         AV_PIX_FMT_YUVA420P16, AV_PIX_FMT_YUVA422P16, AV_PIX_FMT_YUVA444P16,
-        AV_PIX_FMT_XYZ12, AV_PIX_FMT_NONE
-    },
+        AV_PIX_FMT_XYZ12),
     .p.priv_class   = &kakadu_encoder_class,
     .p.wrapper_name = "libkdu",
 };

@@ -166,17 +166,11 @@ static av_always_inline int vc1_filter_line(uint8_t *src, ptrdiff_t stride, int 
             clip = ((clip ^ clip_sign) - clip_sign) >> 1;
             if (clip) {
                 int a3     = FFMIN(a1, a2);
-                int d      = 5 * (a3 - a0);
-                int d_sign = (d >> 31);
+                int d      = (5 * (a0 - a3)) >> 3;
 
-                d       = ((d ^ d_sign) - d_sign) >> 3;
-                d_sign ^= a0_sign;
-
-                if (d_sign ^ clip_sign)
-                    d = 0;
-                else {
+                if (a0_sign ^ clip_sign) {
                     d = FFMIN(d, clip);
-                    d = (d ^ d_sign) - d_sign; /* Restore sign */
+                    d = (d ^ clip_sign) - clip_sign; /* Restore sign */
                     src[-1 * stride] = av_clip_uint8(src[-1 * stride] - d);
                     src[ 0 * stride] = av_clip_uint8(src[ 0 * stride] + d);
                 }
@@ -196,8 +190,8 @@ static av_always_inline int vc1_filter_line(uint8_t *src, ptrdiff_t stride, int 
  * @param pq block quantizer
  * @see 8.6
  */
-static inline void vc1_loop_filter(uint8_t *src, int step, ptrdiff_t stride,
-                                   int len, int pq)
+static av_always_inline void vc1_loop_filter(uint8_t *src, ptrdiff_t step,
+                                             ptrdiff_t stride, int len, int pq)
 {
     int i;
     int filt3;
@@ -547,7 +541,7 @@ static void vc1_inv_trans_4x4_c(uint8_t *dest, ptrdiff_t stride, int16_t *block)
 /* Filter in case of 2 filters */
 #define VC1_MSPEL_FILTER_16B(DIR, TYPE)                                       \
 static av_always_inline int vc1_mspel_ ## DIR ## _filter_16bits(const TYPE *src, \
-                                                                int stride,   \
+                                                                ptrdiff_t stride, \
                                                                 int mode)     \
 {                                                                             \
     switch(mode) {                                                            \
@@ -570,7 +564,7 @@ VC1_MSPEL_FILTER_16B(ver, uint8_t)
 VC1_MSPEL_FILTER_16B(hor, int16_t)
 
 /* Filter used to interpolate fractional pel values */
-static av_always_inline int vc1_mspel_filter(const uint8_t *src, int stride,
+static av_always_inline int vc1_mspel_filter(const uint8_t *src, ptrdiff_t stride,
                                              int mode, int r)
 {
     switch (mode) {
@@ -787,7 +781,7 @@ PUT_VC1_MSPEL(3, 3)
     ((A * src[a] + B * src[a + 1] + \
       C * src[stride + a] + D * src[stride + a + 1] + 32 - 4) >> 6)
 static void put_no_rnd_vc1_chroma_mc8_c(uint8_t *dst /* align 8 */,
-                                        uint8_t *src /* align 1 */,
+                                        const uint8_t *src /* align 1 */,
                                         ptrdiff_t stride, int h, int x, int y)
 {
     const int A = (8 - x) * (8 - y);
@@ -812,7 +806,7 @@ static void put_no_rnd_vc1_chroma_mc8_c(uint8_t *dst /* align 8 */,
     }
 }
 
-static void put_no_rnd_vc1_chroma_mc4_c(uint8_t *dst, uint8_t *src,
+static void put_no_rnd_vc1_chroma_mc4_c(uint8_t *dst, const uint8_t *src,
                                         ptrdiff_t stride, int h, int x, int y)
 {
     const int A = (8 - x) * (8 - y);
@@ -835,7 +829,7 @@ static void put_no_rnd_vc1_chroma_mc4_c(uint8_t *dst, uint8_t *src,
 
 #define avg2(a, b) (((a) + (b) + 1) >> 1)
 static void avg_no_rnd_vc1_chroma_mc8_c(uint8_t *dst /* align 8 */,
-                                        uint8_t *src /* align 1 */,
+                                        const uint8_t *src /* align 1 */,
                                         ptrdiff_t stride, int h, int x, int y)
 {
     const int A = (8 - x) * (8 - y);
@@ -861,7 +855,7 @@ static void avg_no_rnd_vc1_chroma_mc8_c(uint8_t *dst /* align 8 */,
 }
 
 static void avg_no_rnd_vc1_chroma_mc4_c(uint8_t *dst /* align 8 */,
-                                        uint8_t *src /* align 1 */,
+                                        const uint8_t *src /* align 1 */,
                                         ptrdiff_t stride, int h, int x, int y)
 {
     const int A = (8 - x) * (8 - y);
@@ -1033,16 +1027,19 @@ av_cold void ff_vc1dsp_init(VC1DSPContext *dsp)
     dsp->startcode_find_candidate = ff_startcode_find_candidate_c;
     dsp->vc1_unescape_buffer      = vc1_unescape_buffer;
 
-    if (ARCH_AARCH64)
-        ff_vc1dsp_init_aarch64(dsp);
-    if (ARCH_ARM)
-        ff_vc1dsp_init_arm(dsp);
-    if (ARCH_PPC)
-        ff_vc1dsp_init_ppc(dsp);
-    if (ARCH_X86)
-        ff_vc1dsp_init_x86(dsp);
-    if (ARCH_MIPS)
-        ff_vc1dsp_init_mips(dsp);
-    if (ARCH_LOONGARCH)
-        ff_vc1dsp_init_loongarch(dsp);
+#if ARCH_AARCH64
+    ff_vc1dsp_init_aarch64(dsp);
+#elif ARCH_ARM
+    ff_vc1dsp_init_arm(dsp);
+#elif ARCH_PPC
+    ff_vc1dsp_init_ppc(dsp);
+#elif ARCH_RISCV
+    ff_vc1dsp_init_riscv(dsp);
+#elif ARCH_X86 && HAVE_X86ASM
+    ff_vc1dsp_init_x86(dsp);
+#elif ARCH_MIPS
+    ff_vc1dsp_init_mips(dsp);
+#elif ARCH_LOONGARCH
+    ff_vc1dsp_init_loongarch(dsp);
+#endif
 }

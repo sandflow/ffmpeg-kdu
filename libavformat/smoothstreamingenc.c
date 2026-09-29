@@ -31,9 +31,12 @@
 #include "avc.h"
 #include "url.h"
 
+#include "libavutil/attributes_internal.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/avstring.h"
 #include "libavutil/mathematics.h"
+#include "libavutil/uuid.h"
 
 typedef struct Fragment {
     int64_t start_time, duration;
@@ -74,7 +77,7 @@ typedef struct SmoothStreamingContext {
     int nb_fragments;
 } SmoothStreamingContext;
 
-static int ism_write(void *opaque, uint8_t *buf, int buf_size)
+static int ism_write(void *opaque, const uint8_t *buf, int buf_size)
 {
     OutputStream *os = opaque;
     if (os->out)
@@ -139,7 +142,7 @@ static void get_private_data(OutputStream *os)
     AVCodecParameters *par = os->ctx->streams[0]->codecpar;
     uint8_t *ptr = par->extradata;
     int size = par->extradata_size;
-    int i;
+
     if (par->codec_id == AV_CODEC_ID_H264) {
         ff_avc_write_annexb_extradata(ptr, &ptr, &size);
         if (!ptr)
@@ -147,11 +150,10 @@ static void get_private_data(OutputStream *os)
     }
     if (!ptr)
         return;
-    os->private_str = av_mallocz(2*size + 1);
+    os->private_str = av_malloc(2U*size + 1);
     if (!os->private_str)
         goto fail;
-    for (i = 0; i < size; i++)
-        snprintf(&os->private_str[2*i], 3, "%02x", ptr[i]);
+    ff_data_to_hex(os->private_str, ptr, size, 1);
 fail:
     if (ptr != par->extradata)
         av_free(ptr);
@@ -281,17 +283,12 @@ static int ism_write_header(AVFormatContext *s)
 {
     SmoothStreamingContext *c = s->priv_data;
     int ret = 0, i;
-    const AVOutputFormat *oformat;
 
     if (mkdir(s->url, 0777) == -1 && errno != EEXIST) {
         av_log(s, AV_LOG_ERROR, "mkdir failed\n");
         return AVERROR(errno);
     }
 
-    oformat = av_guess_format("ismv", NULL, NULL);
-    if (!oformat) {
-        return AVERROR_MUXER_NOT_FOUND;
-    }
 
     c->streams = av_calloc(s->nb_streams, sizeof(*c->streams));
     if (!c->streams) {
@@ -323,13 +320,16 @@ static int ism_write_header(AVFormatContext *s)
         }
         if ((ret = ff_copy_whiteblacklists(ctx, s)) < 0)
             return ret;
-        ctx->oformat = oformat;
+        EXTERN const FFOutputFormat ff_ismv_muxer;
+        ctx->oformat = &ff_ismv_muxer.p;
         ctx->interrupt_callback = s->interrupt_callback;
 
         if (!(st = avformat_new_stream(ctx, NULL))) {
             return AVERROR(ENOMEM);
         }
-        avcodec_parameters_copy(st->codecpar, s->streams[i]->codecpar);
+        if ((ret = avcodec_parameters_copy(st->codecpar, s->streams[i]->codecpar)) < 0) {
+            return ret;
+        }
         st->sample_aspect_ratio = s->streams[i]->sample_aspect_ratio;
         st->time_base = s->streams[i]->time_base;
 
@@ -339,7 +339,7 @@ static int ism_write_header(AVFormatContext *s)
         }
 
         av_dict_set_int(&opts, "ism_lookahead", c->lookahead_count, 0);
-        av_dict_set(&opts, "movflags", "frag_custom", 0);
+        av_dict_set(&opts, "movflags", "+frag_custom", 0);
         ret = avformat_write_header(ctx, &opts);
         av_dict_free(&opts);
         if (ret < 0) {
@@ -416,13 +416,13 @@ static int parse_fragment(AVFormatContext *s, const char *filename, int64_t *sta
         if (len < 8 || len >= *moof_size)
             goto fail;
         if (tag == MKTAG('u','u','i','d')) {
-            static const uint8_t tfxd[] = {
+            static const AVUUID tfxd = {
                 0x6d, 0x1d, 0x9b, 0x05, 0x42, 0xd5, 0x44, 0xe6,
                 0x80, 0xe2, 0x14, 0x1d, 0xaf, 0xf7, 0x57, 0xb2
             };
-            uint8_t uuid[16];
+            AVUUID uuid;
             avio_read(in, uuid, 16);
-            if (!memcmp(uuid, tfxd, 16) && len >= 8 + 16 + 4 + 16) {
+            if (av_uuid_equal(uuid, tfxd) && len >= 8 + 16 + 4 + 16) {
                 avio_seek(in, 4, SEEK_CUR);
                 *start_ts = avio_rb64(in);
                 *duration = avio_rb64(in);
@@ -636,16 +636,16 @@ static const AVClass ism_class = {
 };
 
 
-const AVOutputFormat ff_smoothstreaming_muxer = {
-    .name           = "smoothstreaming",
-    .long_name      = NULL_IF_CONFIG_SMALL("Smooth Streaming Muxer"),
+const FFOutputFormat ff_smoothstreaming_muxer = {
+    .p.name         = "smoothstreaming",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Smooth Streaming Muxer"),
+    .p.audio_codec  = AV_CODEC_ID_AAC,
+    .p.video_codec  = AV_CODEC_ID_H264,
+    .p.flags        = AVFMT_GLOBALHEADER | AVFMT_NOFILE,
+    .p.priv_class   = &ism_class,
     .priv_data_size = sizeof(SmoothStreamingContext),
-    .audio_codec    = AV_CODEC_ID_AAC,
-    .video_codec    = AV_CODEC_ID_H264,
-    .flags          = AVFMT_GLOBALHEADER | AVFMT_NOFILE,
     .write_header   = ism_write_header,
     .write_packet   = ism_write_packet,
     .write_trailer  = ism_write_trailer,
     .deinit         = ism_free,
-    .priv_class     = &ism_class,
 };

@@ -22,13 +22,17 @@
 #include <stdint.h>
 
 #include "libavutil/attributes.h"
+#include "avcodec.h"
 #include "codec.h"
+#include "config.h"
 
 /**
- * The codec does not modify any global variables in the init function,
- * allowing to call the init function without locking any global mutexes.
+ * The codec is not known to be init-threadsafe (i.e. it might be unsafe
+ * to initialize this codec and another codec concurrently, typically because
+ * the codec calls external APIs that are not known to be thread-safe).
+ * Therefore calling the codec's init function needs to be guarded with a lock.
  */
-#define FF_CODEC_CAP_INIT_THREADSAFE        (1 << 0)
+#define FF_CODEC_CAP_NOT_INIT_THREADSAFE    (1 << 0)
 /**
  * The codec allows calling the close function for deallocation even if
  * the init function returned a failure. Without this capability flag, a
@@ -45,7 +49,7 @@
  */
 #define FF_CODEC_CAP_SETS_PKT_DTS           (1 << 2)
 /**
- * The decoder extracts and fills its parameters even if the frame is
+ * The decoder extracts and fills its parameters if all frames are
  * skipped due to the skip_frame setting.
  */
 #define FF_CODEC_CAP_SKIP_FRAME_FILL_PARAM  (1 << 3)
@@ -59,11 +63,10 @@
  * Codec initializes slice-based threading with a main function
  */
 #define FF_CODEC_CAP_SLICE_THREAD_HAS_MF    (1 << 5)
-/*
- * The codec supports frame threading and has inter-frame dependencies, so it
- * uses ff_thread_report/await_progress().
+/**
+ * The decoder might make use of the ProgressFrame API.
  */
-#define FF_CODEC_CAP_ALLOCATE_PROGRESS      (1 << 6)
+#define FF_CODEC_CAP_USES_PROGRESSFRAMES    (1 << 6)
 /**
  * Codec handles avctx->thread_count == 0 (auto) internally.
  */
@@ -73,6 +76,18 @@
  * internal logic derive them from AVCodecInternal.last_pkt_props.
  */
 #define FF_CODEC_CAP_SETS_FRAME_PROPS       (1 << 8)
+/**
+ * Codec supports embedded ICC profiles (AV_FRAME_DATA_ICC_PROFILE).
+ */
+#define FF_CODEC_CAP_ICC_PROFILES           (1 << 9)
+/**
+ * The encoder has AV_CODEC_CAP_DELAY set, but does not actually have delay - it
+ * only wants to be flushed at the end to update some context variables (e.g.
+ * 2pass stats) or produce a trailing packet. Besides that it immediately
+ * produces exactly one output packet per each input frame, just as no-delay
+ * encoders do.
+ */
+#define FF_CODEC_CAP_EOF_FLUSH              (1 << 10)
 
 /**
  * FFCodec.codec_tags termination value
@@ -82,9 +97,11 @@
 typedef struct FFCodecDefault {
     const char *key;
     const char *value;
+    int flags;
 } FFCodecDefault;
 
 struct AVCodecContext;
+struct AVDictionary;
 struct AVSubtitle;
 struct AVPacket;
 
@@ -118,7 +135,24 @@ typedef struct FFCodec {
     /**
      * Internal codec capabilities FF_CODEC_CAP_*.
      */
-    unsigned caps_internal:29;
+    unsigned caps_internal:24;
+
+    /**
+     * Is this a decoder?
+     */
+    unsigned is_decoder:1;
+
+    /**
+     * This field determines the video color ranges supported by an encoder.
+     * Should be set to a bitmask of AVCOL_RANGE_MPEG and AVCOL_RANGE_JPEG.
+     */
+    unsigned color_ranges:2;
+
+    /**
+     * This field determines the alpha modes supported by an encoder.
+     * Should be set to a bitmask of AVALPHA_MODE_PREMULTIPLIED and AVALPHA_MODE_STRAIGHT.
+     */
+    unsigned alpha_modes:2;
 
     /**
      * This field determines the type of the codec (decoder/encoder)
@@ -151,14 +185,6 @@ typedef struct FFCodec {
      * Private codec-specific defaults.
      */
     const FFCodecDefault *defaults;
-
-    /**
-     * Initialize codec static data, called from av_codec_iterate().
-     *
-     * This is not intended for time consuming operations as it is
-     * run for every codec regardless of that codec being used.
-     */
-    void (*init_static_data)(struct FFCodec *codec);
 
     int (*init)(struct AVCodecContext *);
 
@@ -230,11 +256,19 @@ typedef struct FFCodec {
      */
     void (*flush)(struct AVCodecContext *);
 
-    /**
-     * Decoding only, a comma-separated list of bitstream filters to apply to
-     * packets before decoding.
-     */
-    const char *bsfs;
+    union {
+        /**
+        * Encoding only. Reconfigure the encoder
+        * Called by avcodec_encode_reconfigure()
+        */
+        int (*reconf)(struct AVCodecContext *avctx, struct AVDictionary **dict);
+
+        /**
+        * Decoding only, a comma-separated list of bitstream filters to apply to
+        * packets before decoding.
+        */
+        const char *bsfs;
+    };
 
     /**
      * Array of pointers to hardware configurations supported by the codec,
@@ -249,30 +283,135 @@ typedef struct FFCodec {
      * List of supported codec_tags, terminated by FF_CODEC_TAGS_END.
      */
     const uint32_t *codec_tags;
-} FFCodec;
 
-#define FF_CODEC_DECODE_CB(func)                          \
-    .cb_type           = FF_CODEC_CB_TYPE_DECODE,         \
-    .cb.decode         = (func)
-#define FF_CODEC_DECODE_SUB_CB(func)                      \
-    .cb_type           = FF_CODEC_CB_TYPE_DECODE_SUB,     \
-    .cb.decode_sub     = (func)
-#define FF_CODEC_RECEIVE_FRAME_CB(func)                   \
-    .cb_type           = FF_CODEC_CB_TYPE_RECEIVE_FRAME,  \
-    .cb.receive_frame  = (func)
-#define FF_CODEC_ENCODE_CB(func)                          \
-    .cb_type           = FF_CODEC_CB_TYPE_ENCODE,         \
-    .cb.encode         = (func)
-#define FF_CODEC_ENCODE_SUB_CB(func)                      \
-    .cb_type           = FF_CODEC_CB_TYPE_ENCODE_SUB,     \
-    .cb.encode_sub     = (func)
-#define FF_CODEC_RECEIVE_PACKET_CB(func)                  \
-    .cb_type           = FF_CODEC_CB_TYPE_RECEIVE_PACKET, \
-    .cb.receive_packet = (func)
+    /**
+     * Custom callback for avcodec_get_supported_config(). If absent,
+     * ff_default_get_supported_config() will be used. `out_num_configs` will
+     * always be set to a valid pointer.
+     */
+    int (*get_supported_config)(const struct AVCodecContext *avctx,
+                                const AVCodec *codec,
+                                enum AVCodecConfig config,
+                                unsigned flags,
+                                const void **out_configs,
+                                int *out_num_configs);
+#if defined(ASSERT_LEVEL) && ASSERT_LEVEL >= 2
+    struct {
+#else
+    union {
+#endif
+        /// Video-only fields
+        struct {
+            const AVRational *supported_framerates;
+            const enum AVPixelFormat *pix_fmts;
+        };
+        /// Audio-only fields
+        struct {
+            const AVChannelLayout *ch_layouts;
+            const int *supported_samplerates;
+            const enum AVSampleFormat *sample_fmts;
+        };
+    };
+} FFCodec;
 
 static av_always_inline const FFCodec *ffcodec(const AVCodec *codec)
 {
     return (const FFCodec*)codec;
 }
+
+/**
+ * Internal version of av_codec_is_encoder(). Must not be called with
+ * a NULL AVCodec*.
+ */
+static inline int ff_codec_is_encoder(const AVCodec *avcodec)
+{
+    const FFCodec *const codec = ffcodec(avcodec);
+    return !codec->is_decoder;
+}
+
+/**
+ * Internal version of av_codec_is_decoder(). Must not be called with
+ * a NULL AVCodec*.
+ */
+static inline int ff_codec_is_decoder(const AVCodec *avcodec)
+{
+    const FFCodec *const codec = ffcodec(avcodec);
+    return codec->is_decoder;
+}
+
+/**
+ * Default implementation for avcodec_get_supported_config(). Will return the
+ * relevant fields from AVCodec if present, or NULL otherwise.
+ *
+ * For AVCODEC_CONFIG_COLOR_RANGE, the output will depend on the bitmask in
+ * FFCodec.color_ranges, with a value of 0 returning NULL.
+ */
+int ff_default_get_supported_config(const struct AVCodecContext *avctx,
+                                    const AVCodec *codec,
+                                    enum AVCodecConfig config,
+                                    unsigned flags,
+                                    const void **out_configs,
+                                    int *out_num_configs);
+
+#if CONFIG_SMALL
+#define CODEC_LONG_NAME(str) .p.long_name = NULL
+#else
+#define CODEC_LONG_NAME(str) .p.long_name = str
+#endif
+
+#if HAVE_THREADS
+#define UPDATE_THREAD_CONTEXT(func) \
+        .update_thread_context          = (func)
+#define UPDATE_THREAD_CONTEXT_FOR_USER(func) \
+        .update_thread_context_for_user = (func)
+#else
+#define UPDATE_THREAD_CONTEXT(func) \
+        .update_thread_context          = NULL
+#define UPDATE_THREAD_CONTEXT_FOR_USER(func) \
+        .update_thread_context_for_user = NULL
+#endif
+
+#define FF_CODEC_DECODE_CB(func)                          \
+    .is_decoder        = 1,                               \
+    .cb_type           = FF_CODEC_CB_TYPE_DECODE,         \
+    .cb.decode         = (func)
+#define FF_CODEC_DECODE_SUB_CB(func)                      \
+    .is_decoder        = 1,                               \
+    .cb_type           = FF_CODEC_CB_TYPE_DECODE_SUB,     \
+    .cb.decode_sub     = (func)
+#define FF_CODEC_RECEIVE_FRAME_CB(func)                   \
+    .is_decoder        = 1,                               \
+    .cb_type           = FF_CODEC_CB_TYPE_RECEIVE_FRAME,  \
+    .cb.receive_frame  = (func)
+#define FF_CODEC_ENCODE_CB(func)                          \
+    .is_decoder        = 0,                               \
+    .cb_type           = FF_CODEC_CB_TYPE_ENCODE,         \
+    .cb.encode         = (func)
+#define FF_CODEC_ENCODE_SUB_CB(func)                      \
+    .is_decoder        = 0,                               \
+    .cb_type           = FF_CODEC_CB_TYPE_ENCODE_SUB,     \
+    .cb.encode_sub     = (func)
+#define FF_CODEC_RECEIVE_PACKET_CB(func)                  \
+    .is_decoder        = 0,                               \
+    .cb_type           = FF_CODEC_CB_TYPE_RECEIVE_PACKET, \
+    .cb.receive_packet = (func)
+
+#define CODEC_CH_LAYOUTS(...) CODEC_CH_LAYOUTS_ARRAY(((const AVChannelLayout[]) { __VA_ARGS__, { 0 } }))
+#define CODEC_CH_LAYOUTS_ARRAY(array) CODEC_ARRAY(ch_layouts, (array))
+
+#define CODEC_SAMPLERATES(...) CODEC_SAMPLERATES_ARRAY(((const int[]) { __VA_ARGS__, 0 }))
+#define CODEC_SAMPLERATES_ARRAY(array) CODEC_ARRAY(supported_samplerates, (array))
+
+#define CODEC_SAMPLEFMTS(...) CODEC_SAMPLEFMTS_ARRAY(((const enum AVSampleFormat[]) { __VA_ARGS__, AV_SAMPLE_FMT_NONE }))
+#define CODEC_SAMPLEFMTS_ARRAY(array) CODEC_ARRAY(sample_fmts, (array))
+
+#define CODEC_FRAMERATES(...) CODEC_FRAMERATES_ARRAY(((const AVRational[]) { __VA_ARGS__, { 0, 0 } }))
+#define CODEC_FRAMERATES_ARRAY(array) CODEC_ARRAY(supported_framerates, (array))
+
+#define CODEC_PIXFMTS(...) CODEC_PIXFMTS_ARRAY(((const enum AVPixelFormat[]) { __VA_ARGS__, AV_PIX_FMT_NONE }))
+#define CODEC_PIXFMTS_ARRAY(array) CODEC_ARRAY(pix_fmts, (array))
+
+#define CODEC_ARRAY(field, array) \
+    .field = (array)              \
 
 #endif /* AVCODEC_CODEC_INTERNAL_H */

@@ -27,6 +27,7 @@
 
 #include "libavutil/channel_layout.h"
 #include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "avformat.h"
 #include "avio_internal.h"
 #include "demux.h"
@@ -34,6 +35,8 @@
 
 #define SMACKER_PAL 0x01
 #define SMACKER_FLAG_RING_FRAME 0x01
+#define SMACKER_FLAG_Y_INTERLACE (1 << 1)
+#define SMACKER_FLAG_Y_DOUBLE    (1 << 2)
 
 enum SAudFlags {
     SMK_AUD_PACKED  = 0x80,
@@ -144,6 +147,9 @@ static int smacker_read_header(AVFormatContext *s)
     avpriv_set_pts_info(st, 33, pts_inc, tbase);
     st->duration = smk->frames;
 
+    st->sample_aspect_ratio = (AVRational){ 1, 1 +
+        !!(flags & (SMACKER_FLAG_Y_INTERLACE | SMACKER_FLAG_Y_DOUBLE)) };
+
     /* init video codec */
     par = st->codecpar;
     par->width      = width;
@@ -171,34 +177,34 @@ static int smacker_read_header(AVFormatContext *s)
 
         if (rate) {
             AVStream *ast = avformat_new_stream(s, NULL);
-            AVCodecParameters *par;
             if (!ast)
                 return AVERROR(ENOMEM);
 
+            AVCodecParameters *const apar = ast->codecpar;
+
             smk->indexes[i] = ast->index;
-            par = ast->codecpar;
-            par->codec_type = AVMEDIA_TYPE_AUDIO;
+            apar->codec_type = AVMEDIA_TYPE_AUDIO;
             if (aflag & SMK_AUD_BINKAUD) {
-                par->codec_id  = AV_CODEC_ID_BINKAUDIO_RDFT;
+                apar->codec_id  = AV_CODEC_ID_BINKAUDIO_RDFT;
             } else if (aflag & SMK_AUD_USEDCT) {
-                par->codec_id  = AV_CODEC_ID_BINKAUDIO_DCT;
+                apar->codec_id  = AV_CODEC_ID_BINKAUDIO_DCT;
             } else if (aflag & SMK_AUD_PACKED) {
-                par->codec_id  = AV_CODEC_ID_SMACKAUDIO;
-                par->codec_tag = MKTAG('S', 'M', 'K', 'A');
+                apar->codec_id  = AV_CODEC_ID_SMACKAUDIO;
+                apar->codec_tag = MKTAG('S', 'M', 'K', 'A');
             } else {
-                par->codec_id  = AV_CODEC_ID_PCM_U8;
+                apar->codec_id  = AV_CODEC_ID_PCM_U8;
             }
-            av_channel_layout_default(&par->ch_layout,
+            av_channel_layout_default(&apar->ch_layout,
                                       !!(aflag & SMK_AUD_STEREO) + 1);
-            par->sample_rate = rate;
-            par->bits_per_coded_sample = (aflag & SMK_AUD_16BITS) ? 16 : 8;
-            if (par->bits_per_coded_sample == 16 &&
-                par->codec_id == AV_CODEC_ID_PCM_U8)
-                par->codec_id = AV_CODEC_ID_PCM_S16LE;
+            apar->sample_rate = rate;
+            apar->bits_per_coded_sample = (aflag & SMK_AUD_16BITS) ? 16 : 8;
+            if (apar->bits_per_coded_sample == 16 &&
+                apar->codec_id == AV_CODEC_ID_PCM_U8)
+                apar->codec_id = AV_CODEC_ID_PCM_S16LE;
             else
                 smk->duration_size[i] = 4;
-            avpriv_set_pts_info(ast, 64, 1, par->sample_rate * par->ch_layout.nb_channels
-                                            * par->bits_per_coded_sample / 8);
+            avpriv_set_pts_info(ast, 64, 1, apar->sample_rate * apar->ch_layout.nb_channels
+                                            * apar->bits_per_coded_sample / 8);
         }
     }
 
@@ -399,9 +405,9 @@ static int smacker_read_seek(AVFormatContext *s, int stream_index,
     return 0;
 }
 
-const AVInputFormat ff_smacker_demuxer = {
-    .name           = "smk",
-    .long_name      = NULL_IF_CONFIG_SMALL("Smacker"),
+const FFInputFormat ff_smacker_demuxer = {
+    .p.name         = "smk",
+    .p.long_name    = NULL_IF_CONFIG_SMALL("Smacker"),
     .priv_data_size = sizeof(SmackerContext),
     .read_probe     = smacker_probe,
     .read_header    = smacker_read_header,

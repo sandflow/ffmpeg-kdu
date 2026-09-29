@@ -17,11 +17,10 @@
  */
 
 #include "libavutil/opt.h"
-#include "libavutil/imgutils.h"
+#include "libavutil/pixdesc.h"
 #include "avfilter.h"
 #include "drawutils.h"
-#include "formats.h"
-#include "internal.h"
+#include "filters.h"
 #include "video.h"
 
 #define R 0
@@ -104,9 +103,9 @@ static int do_slice_##name##_##xall(AVFilterContext *ctx,            \
     const int step = s->step;                                        \
     const int width = frame->width;                                  \
     const int process_h = frame->height;                             \
-    const int slice_start = (process_h *  jobnr   ) / nb_jobs;       \
-    const int slice_end   = (process_h * (jobnr+1)) / nb_jobs;       \
-    const int linesize = frame->linesize[0] / sizeof(type);          \
+    const int slice_start = ff_slice_pos(process_h, jobnr, nb_jobs); \
+    const int slice_end   = ff_slice_pos(process_h, jobnr + 1, nb_jobs); \
+    const ptrdiff_t linesize = frame->linesize[0] / sizeof(type);    \
     type *row = (type *)frame->data[0] + linesize * slice_start;     \
     const uint8_t offset_r = s->rgba_map[R];                         \
     const uint8_t offset_g = s->rgba_map[G];                         \
@@ -296,7 +295,6 @@ static void transform_point(float matrix[4][4],
                             float x, float y, float z,
                             float *tx, float *ty, float *tz)
 {
-    x = y;
     *tx = x * matrix[0][0] + y * matrix[1][0] + z * matrix[2][0] + matrix[3][0];
     *ty = x * matrix[0][1] + y * matrix[1][1] + z * matrix[2][1] + matrix[3][1];
     *tz = x * matrix[0][2] + y * matrix[1][2] + z * matrix[2][2] + matrix[3][2];
@@ -322,8 +320,8 @@ static void hue_rotate_matrix(float matrix[4][4], float rotation,
     y_rotate_matrix(matrix, yrs, yrc);
 
     transform_point(matrix, rlw, glw, blw, &lx, &ly, &lz);
-    zsx = lx / lz;
-    zsy = ly / lz;
+    zsx = lz ? lx / lz : 0.f;
+    zsy = lz ? ly / lz : 0.f;
     z_shear_matrix(matrix, zsx, zsy);
 
     zrs = sinf(rotation * M_PI / 180.f);
@@ -434,13 +432,6 @@ static const AVFilterPad huesaturation_inputs[] = {
     },
 };
 
-static const AVFilterPad huesaturation_outputs[] = {
-    {
-        .name = "default",
-        .type = AVMEDIA_TYPE_VIDEO,
-    },
-};
-
 #define OFFSET(x) offsetof(HueSaturationContext, x)
 #define VF AV_OPT_FLAG_FILTERING_PARAM|AV_OPT_FLAG_VIDEO_PARAM|AV_OPT_FLAG_RUNTIME_PARAM
 
@@ -448,14 +439,14 @@ static const AVOption huesaturation_options[] = {
     { "hue",        "set the hue shift",               OFFSET(hue),        AV_OPT_TYPE_FLOAT, {.dbl=0},-180, 180, VF },
     { "saturation", "set the saturation shift",        OFFSET(saturation), AV_OPT_TYPE_FLOAT, {.dbl=0},  -1,   1, VF },
     { "intensity",  "set the intensity shift",         OFFSET(intensity),  AV_OPT_TYPE_FLOAT, {.dbl=0},  -1,   1, VF },
-    { "colors",     "set colors range",                OFFSET(colors),     AV_OPT_TYPE_FLAGS, {.i64=ALL},     0,ALL,VF, "colors" },
-    {  "r",         "set reds",                        0,                  AV_OPT_TYPE_CONST, {.i64=RED},     0, 0, VF, "colors" },
-    {  "y",         "set yellows",                     0,                  AV_OPT_TYPE_CONST, {.i64=YELLOW},  0, 0, VF, "colors" },
-    {  "g",         "set greens",                      0,                  AV_OPT_TYPE_CONST, {.i64=GREEN},   0, 0, VF, "colors" },
-    {  "c",         "set cyans",                       0,                  AV_OPT_TYPE_CONST, {.i64=CYAN},    0, 0, VF, "colors" },
-    {  "b",         "set blues",                       0,                  AV_OPT_TYPE_CONST, {.i64=BLUE},    0, 0, VF, "colors" },
-    {  "m",         "set magentas",                    0,                  AV_OPT_TYPE_CONST, {.i64=MAGENTA}, 0, 0, VF, "colors" },
-    {  "a",         "set all colors",                  0,                  AV_OPT_TYPE_CONST, {.i64=ALL},     0, 0, VF, "colors" },
+    { "colors",     "set colors range",                OFFSET(colors),     AV_OPT_TYPE_FLAGS, {.i64=ALL},     0,ALL,VF, .unit = "colors" },
+    {  "r",         "set reds",                        0,                  AV_OPT_TYPE_CONST, {.i64=RED},     0, 0, VF, .unit = "colors" },
+    {  "y",         "set yellows",                     0,                  AV_OPT_TYPE_CONST, {.i64=YELLOW},  0, 0, VF, .unit = "colors" },
+    {  "g",         "set greens",                      0,                  AV_OPT_TYPE_CONST, {.i64=GREEN},   0, 0, VF, .unit = "colors" },
+    {  "c",         "set cyans",                       0,                  AV_OPT_TYPE_CONST, {.i64=CYAN},    0, 0, VF, .unit = "colors" },
+    {  "b",         "set blues",                       0,                  AV_OPT_TYPE_CONST, {.i64=BLUE},    0, 0, VF, .unit = "colors" },
+    {  "m",         "set magentas",                    0,                  AV_OPT_TYPE_CONST, {.i64=MAGENTA}, 0, 0, VF, .unit = "colors" },
+    {  "a",         "set all colors",                  0,                  AV_OPT_TYPE_CONST, {.i64=ALL},     0, 0, VF, .unit = "colors" },
     { "strength",   "set the filtering strength",      OFFSET(strength),   AV_OPT_TYPE_FLOAT, {.dbl=1},       0,100,VF },
     { "rw",         "set the red weight",              OFFSET(rlw),        AV_OPT_TYPE_FLOAT, {.dbl=.333},    0, 1, VF },
     { "gw",         "set the green weight",            OFFSET(glw),        AV_OPT_TYPE_FLOAT, {.dbl=.334},    0, 1, VF },
@@ -466,14 +457,14 @@ static const AVOption huesaturation_options[] = {
 
 AVFILTER_DEFINE_CLASS(huesaturation);
 
-const AVFilter ff_vf_huesaturation = {
-    .name            = "huesaturation",
-    .description     = NULL_IF_CONFIG_SMALL("Apply hue-saturation-intensity adjustments."),
+const FFFilter ff_vf_huesaturation = {
+    .p.name          = "huesaturation",
+    .p.description   = NULL_IF_CONFIG_SMALL("Apply hue-saturation-intensity adjustments."),
+    .p.priv_class    = &huesaturation_class,
+    .p.flags         = AVFILTER_FLAG_SUPPORT_TIMELINE_GENERIC | AVFILTER_FLAG_SLICE_THREADS,
     .priv_size       = sizeof(HueSaturationContext),
-    .priv_class      = &huesaturation_class,
     FILTER_INPUTS(huesaturation_inputs),
-    FILTER_OUTPUTS(huesaturation_outputs),
+    FILTER_OUTPUTS(ff_video_default_filterpad),
     FILTER_PIXFMTS_ARRAY(pixel_fmts),
-    .flags           = AVFILTER_FLAG_SUPPORT_TIMELINE_GENERIC | AVFILTER_FLAG_SLICE_THREADS,
     .process_command = ff_filter_process_command,
 };

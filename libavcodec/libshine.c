@@ -44,11 +44,6 @@ static av_cold int libshine_encode_init(AVCodecContext *avctx)
 {
     SHINEContext *s = avctx->priv_data;
 
-    if (avctx->ch_layout.nb_channels <= 0 || avctx->ch_layout.nb_channels > 2){
-        av_log(avctx, AV_LOG_ERROR, "only mono or stereo is supported\n");
-        return AVERROR(EINVAL);
-    }
-
     shine_set_config_mpeg_defaults(&s->config.mpeg);
     if (avctx->bit_rate)
         s->config.mpeg.bitr = avctx->bit_rate / 1000;
@@ -71,7 +66,7 @@ static int libshine_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
                                  const AVFrame *frame, int *got_packet_ptr)
 {
     SHINEContext *s = avctx->priv_data;
-    MPADecodeHeader hdr;
+    MPADecodeHeader2 hdr;
     unsigned char *data;
     int written;
     int ret, len;
@@ -97,7 +92,7 @@ static int libshine_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
 
     if (s->buffer_index < 4 || !s->afq.frame_count)
         return 0;
-    if (avpriv_mpegaudio_decode_header(&hdr, AV_RB32(s->buffer))) {
+    if (ff_mpegaudio_decode_header(&hdr, AV_RB32(s->buffer))) {
         av_log(avctx, AV_LOG_ERROR, "free format output not supported\n");
         return -1;
     }
@@ -110,8 +105,9 @@ static int libshine_encode_frame(AVCodecContext *avctx, AVPacket *avpkt,
         s->buffer_index -= len;
         memmove(s->buffer, s->buffer + len, s->buffer_index);
 
-        ff_af_queue_remove(&s->afq, avctx->frame_size, &avpkt->pts,
-                           &avpkt->duration);
+        ret = ff_af_queue_remove(&s->afq, avctx->frame_size, avpkt);
+        if (ret < 0)
+            return ret;
 
         *got_packet_ptr = 1;
     }
@@ -133,25 +129,17 @@ static const int libshine_sample_rates[] = {
 
 const FFCodec ff_libshine_encoder = {
     .p.name                = "libshine",
-    .p.long_name           = NULL_IF_CONFIG_SMALL("libshine MP3 (MPEG audio layer 3)"),
+    CODEC_LONG_NAME("libshine MP3 (MPEG audio layer 3)"),
     .p.type                = AVMEDIA_TYPE_AUDIO,
     .p.id                  = AV_CODEC_ID_MP3,
     .p.capabilities        = AV_CODEC_CAP_DR1 | AV_CODEC_CAP_DELAY,
+    .caps_internal         = FF_CODEC_CAP_NOT_INIT_THREADSAFE,
     .priv_data_size        = sizeof(SHINEContext),
     .init                  = libshine_encode_init,
     FF_CODEC_ENCODE_CB(libshine_encode_frame),
     .close                 = libshine_encode_close,
-    .p.sample_fmts         = (const enum AVSampleFormat[]){ AV_SAMPLE_FMT_S16P,
-                                                            AV_SAMPLE_FMT_NONE },
-    .p.supported_samplerates = libshine_sample_rates,
-#if FF_API_OLD_CHANNEL_LAYOUT
-    .p.channel_layouts     = (const uint64_t[]) { AV_CH_LAYOUT_MONO,
-                                                  AV_CH_LAYOUT_STEREO,
-                                                  0 },
-#endif
-    .p.ch_layouts          = (const AVChannelLayout[]) { AV_CHANNEL_LAYOUT_MONO,
-                                                         AV_CHANNEL_LAYOUT_STEREO,
-                                                         { 0 },
-    },
+    CODEC_SAMPLEFMTS(AV_SAMPLE_FMT_S16P),
+    CODEC_SAMPLERATES_ARRAY(libshine_sample_rates),
+    CODEC_CH_LAYOUTS(AV_CHANNEL_LAYOUT_MONO, AV_CHANNEL_LAYOUT_STEREO),
     .p.wrapper_name        = "libshine",
 };

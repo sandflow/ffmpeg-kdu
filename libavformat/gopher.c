@@ -48,8 +48,11 @@ static int gopher_connect(URLContext *h, const char *path)
 
     if (!*path) return AVERROR(EINVAL);
     switch (*++path) {
+        case ';':
+        case '<':
         case '5':
         case '9':
+        case 's':
             path = strchr(path, '/');
             if (!path) return AVERROR(EINVAL);
             break;
@@ -58,6 +61,11 @@ static int gopher_connect(URLContext *h, const char *path)
                    "Gopher protocol type '%c' not supported yet!\n",
                    *path);
             return AVERROR(EINVAL);
+    }
+
+    if (strpbrk(path, "\r\n")) {
+        av_log(h, AV_LOG_ERROR, "Gopher path contains CRLF characters\n");
+        return AVERROR(EINVAL);
     }
 
     /* send gopher sector */

@@ -19,13 +19,12 @@
  */
 
 #include "libavutil/imgutils.h"
-#include "libavutil/intreadwrite.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 
 #include "avfilter.h"
-#include "formats.h"
-#include "internal.h"
+#include "filters.h"
 #include "video.h"
 
 typedef struct LagfunContext {
@@ -82,8 +81,8 @@ static int lagfun_frame##name(AVFilterContext *ctx, void *arg,            \
     AVFrame *out = td->out;                                               \
                                                                           \
     for (int p = 0; p < s->nb_planes; p++) {                              \
-        const int slice_start = (s->planeheight[p] * jobnr) / nb_jobs;    \
-        const int slice_end = (s->planeheight[p] * (jobnr+1)) / nb_jobs;  \
+        const int slice_start = ff_slice_pos(s->planeheight[p], jobnr, nb_jobs); \
+        const int slice_end = ff_slice_pos(s->planeheight[p], jobnr + 1, nb_jobs); \
         const int width = s->planewidth[p];                               \
         const type *src = (const type *)in->data[p] +                     \
                           slice_start * in->linesize[p] / sizeof(type);   \
@@ -173,7 +172,7 @@ static int filter_frame(AVFilterLink *inlink, AVFrame *in)
         av_frame_free(&in);
         return AVERROR(ENOMEM);
     }
-    out->pts = in->pts;
+    av_frame_copy_props(out, in);
 
     td.out = out;
     td.in = in;
@@ -219,15 +218,15 @@ static const AVFilterPad outputs[] = {
 
 AVFILTER_DEFINE_CLASS(lagfun);
 
-const AVFilter ff_vf_lagfun = {
-    .name          = "lagfun",
-    .description   = NULL_IF_CONFIG_SMALL("Slowly update darker pixels."),
+const FFFilter ff_vf_lagfun = {
+    .p.name        = "lagfun",
+    .p.description = NULL_IF_CONFIG_SMALL("Slowly update darker pixels."),
+    .p.priv_class  = &lagfun_class,
+    .p.flags       = AVFILTER_FLAG_SLICE_THREADS | AVFILTER_FLAG_SUPPORT_TIMELINE_INTERNAL,
     .priv_size     = sizeof(LagfunContext),
-    .priv_class    = &lagfun_class,
     .uninit        = uninit,
     FILTER_OUTPUTS(outputs),
     FILTER_INPUTS(inputs),
     FILTER_PIXFMTS_ARRAY(pixel_fmts),
-    .flags         = AVFILTER_FLAG_SLICE_THREADS | AVFILTER_FLAG_SUPPORT_TIMELINE_INTERNAL,
     .process_command = ff_filter_process_command,
 };

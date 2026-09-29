@@ -29,7 +29,9 @@
 #include "url.h"
 #include "tls.h"
 #include "libavcodec/internal.h"
+#include "libavutil/attributes.h"
 #include "libavutil/avstring.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "libavutil/parseutils.h"
 
@@ -42,7 +44,6 @@ SecIdentityRef SecIdentityCreate(CFAllocatorRef allocator, SecCertificateRef cer
 #define ioErr -36
 
 typedef struct TLSContext {
-    const AVClass *class;
     TLSShared tls_shared;
     SSLContextRef ssl_context;
     CFArrayRef ca_array;
@@ -355,6 +356,7 @@ static int map_ssl_error(OSStatus status, size_t processed)
     case errSSLWouldBlock:
         if (processed > 0)
             return processed;
+        av_fallthrough;
     default:
         return (int)status;
     }

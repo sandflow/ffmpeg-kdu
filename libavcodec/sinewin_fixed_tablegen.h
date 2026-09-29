@@ -38,14 +38,17 @@
 #define SINETABLE_CONST const
 #include "libavcodec/sinewin_fixed_tables.h"
 #else
-// do not use libavutil/libm.h since this is compiled both
-// for the host and the target and config.h is only valid for the target
 #include <math.h>
 #include "libavutil/attributes.h"
 
 #define SINETABLE_CONST
+SINETABLE( 96);
+SINETABLE( 120);
 SINETABLE( 128);
+SINETABLE( 480);
 SINETABLE( 512);
+SINETABLE( 768);
+SINETABLE( 960);
 SINETABLE(1024);
 
 #define SIN_FIX(a) (int)floor((a) * 0x80000000 + 0.5)
@@ -59,8 +62,13 @@ static av_cold void sine_window_init_fixed(int *window, int n)
 
 static av_cold void init_sine_windows_fixed(void)
 {
+    sine_window_init_fixed(sine_96_fixed,   96);
+    sine_window_init_fixed(sine_120_fixed,  120);
     sine_window_init_fixed(sine_128_fixed,  128);
+    sine_window_init_fixed(sine_480_fixed,  480);
     sine_window_init_fixed(sine_512_fixed,  512);
+    sine_window_init_fixed(sine_768_fixed,  768);
+    sine_window_init_fixed(sine_960_fixed,  960);
     sine_window_init_fixed(sine_1024_fixed, 1024);
 }
 #endif /* CONFIG_HARDCODED_TABLES */

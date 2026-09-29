@@ -24,10 +24,11 @@
  */
 
 #include "libavutil/avassert.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
 #include "audio.h"
 #include "avfilter.h"
-#include "internal.h"
+#include "filters.h"
 #include "generate_wave_table.h"
 
 typedef struct AudioPhaserContext {
@@ -61,11 +62,11 @@ static const AVOption aphaser_options[] = {
     { "delay",    "set delay in milliseconds", OFFSET(delay),    AV_OPT_TYPE_DOUBLE, {.dbl=3.},  0,  5,   FLAGS },
     { "decay",    "set decay",                 OFFSET(decay),    AV_OPT_TYPE_DOUBLE, {.dbl=.4},  0, .99,  FLAGS },
     { "speed",    "set modulation speed",      OFFSET(speed),    AV_OPT_TYPE_DOUBLE, {.dbl=.5}, .1,  2,   FLAGS },
-    { "type",     "set modulation type",       OFFSET(type),     AV_OPT_TYPE_INT,    {.i64=WAVE_TRI}, 0, WAVE_NB-1, FLAGS, "type" },
-    { "triangular",  NULL, 0, AV_OPT_TYPE_CONST,  {.i64=WAVE_TRI}, 0, 0, FLAGS, "type" },
-    { "t",           NULL, 0, AV_OPT_TYPE_CONST,  {.i64=WAVE_TRI}, 0, 0, FLAGS, "type" },
-    { "sinusoidal",  NULL, 0, AV_OPT_TYPE_CONST,  {.i64=WAVE_SIN}, 0, 0, FLAGS, "type" },
-    { "s",           NULL, 0, AV_OPT_TYPE_CONST,  {.i64=WAVE_SIN}, 0, 0, FLAGS, "type" },
+    { "type",     "set modulation type",       OFFSET(type),     AV_OPT_TYPE_INT,    {.i64=WAVE_TRI}, 0, WAVE_NB-1, FLAGS, .unit = "type" },
+    { "triangular",  NULL, 0, AV_OPT_TYPE_CONST,  {.i64=WAVE_TRI}, 0, 0, FLAGS, .unit = "type" },
+    { "t",           NULL, 0, AV_OPT_TYPE_CONST,  {.i64=WAVE_TRI}, 0, 0, FLAGS, .unit = "type" },
+    { "sinusoidal",  NULL, 0, AV_OPT_TYPE_CONST,  {.i64=WAVE_SIN}, 0, 0, FLAGS, .unit = "type" },
+    { "s",           NULL, 0, AV_OPT_TYPE_CONST,  {.i64=WAVE_SIN}, 0, 0, FLAGS, .unit = "type" },
     { NULL }
 };
 
@@ -85,7 +86,7 @@ static av_cold int init(AVFilterContext *ctx)
 
 #define MOD(a, b) (((a) >= (b)) ? (a) - (b) : (a))
 
-#define PHASER_PLANAR(name, type)                                      \
+#define PHASER_PLANAR(name, type, output)                              \
 static void phaser_## name ##p(AudioPhaserContext *s,                  \
                                uint8_t * const *ssrc, uint8_t **ddst,  \
                                int nb_samples, int channels)           \
@@ -113,7 +114,7 @@ static void phaser_## name ##p(AudioPhaserContext *s,                  \
             delay_pos = MOD(delay_pos + 1, s->delay_buffer_length);    \
             buffer[delay_pos] = v;                                     \
                                                                        \
-            *dst = v * s->out_gain;                                    \
+            *dst = output;                                             \
         }                                                              \
     }                                                                  \
                                                                        \
@@ -121,7 +122,7 @@ static void phaser_## name ##p(AudioPhaserContext *s,                  \
     s->modulation_pos = modulation_pos;                                \
 }
 
-#define PHASER(name, type)                                              \
+#define PHASER(name, type, output)                                      \
 static void phaser_## name (AudioPhaserContext *s,                      \
                             uint8_t * const *ssrc, uint8_t **ddst,      \
                             int nb_samples, int channels)               \
@@ -146,7 +147,7 @@ static void phaser_## name (AudioPhaserContext *s,                      \
                                                                         \
             buffer[npos + c] = v;                                       \
                                                                         \
-            *dst = v * s->out_gain;                                     \
+            *dst = output;                                              \
         }                                                               \
                                                                         \
         modulation_pos = MOD(modulation_pos + 1,                        \
@@ -157,15 +158,15 @@ static void phaser_## name (AudioPhaserContext *s,                      \
     s->modulation_pos = modulation_pos;                                 \
 }
 
-PHASER_PLANAR(dbl, double)
-PHASER_PLANAR(flt, float)
-PHASER_PLANAR(s16, int16_t)
-PHASER_PLANAR(s32, int32_t)
+PHASER_PLANAR(dbl, double,  v * s->out_gain)
+PHASER_PLANAR(flt, float,   v * s->out_gain)
+PHASER_PLANAR(s16, int16_t, av_clipd(v * s->out_gain, INT16_MIN, INT16_MAX))
+PHASER_PLANAR(s32, int32_t, av_clipd(v * s->out_gain, INT32_MIN, INT32_MAX))
 
-PHASER(dbl, double)
-PHASER(flt, float)
-PHASER(s16, int16_t)
-PHASER(s32, int32_t)
+PHASER(dbl, double,  v * s->out_gain)
+PHASER(flt, float,   v * s->out_gain)
+PHASER(s16, int16_t, av_clipd(v * s->out_gain, INT16_MIN, INT16_MAX))
+PHASER(s32, int32_t, av_clipd(v * s->out_gain, INT32_MIN, INT32_MAX))
 
 static int config_output(AVFilterLink *outlink)
 {
@@ -255,9 +256,10 @@ static const AVFilterPad aphaser_outputs[] = {
     },
 };
 
-const AVFilter ff_af_aphaser = {
-    .name          = "aphaser",
-    .description   = NULL_IF_CONFIG_SMALL("Add a phasing effect to the audio."),
+const FFFilter ff_af_aphaser = {
+    .p.name        = "aphaser",
+    .p.description = NULL_IF_CONFIG_SMALL("Add a phasing effect to the audio."),
+    .p.priv_class  = &aphaser_class,
     .priv_size     = sizeof(AudioPhaserContext),
     .init          = init,
     .uninit        = uninit,
@@ -267,5 +269,4 @@ const AVFilter ff_af_aphaser = {
                       AV_SAMPLE_FMT_FLT, AV_SAMPLE_FMT_FLTP,
                       AV_SAMPLE_FMT_S32, AV_SAMPLE_FMT_S32P,
                       AV_SAMPLE_FMT_S16, AV_SAMPLE_FMT_S16P),
-    .priv_class    = &aphaser_class,
 };

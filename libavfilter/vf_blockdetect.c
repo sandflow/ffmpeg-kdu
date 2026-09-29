@@ -29,9 +29,12 @@
  * @author Thilo Borgmann <thilo.borgmann _at_ mail.de>
  */
 
-#include "libavutil/imgutils.h"
+#include "libavutil/mem.h"
 #include "libavutil/opt.h"
-#include "internal.h"
+#include "libavutil/pixdesc.h"
+
+#include "filters.h"
+#include "video.h"
 
 typedef struct BLKContext {
     const AVClass *class;
@@ -59,11 +62,6 @@ static const AVOption blockdetect_options[] = {
 };
 
 AVFILTER_DEFINE_CLASS(blockdetect);
-
-static av_cold int blockdetect_init(AVFilterContext *ctx)
-{
-    return 0;
-}
 
 static int blockdetect_config_input(AVFilterLink *inlink)
 {
@@ -137,8 +135,10 @@ static float calculate_blockiness(BLKContext *s, int w, int h,
                 nonblock_count++;
             }
         }
-        temp = (block / block_count) / (nonblock / nonblock_count);
-        ret = FFMAX(ret, temp);
+        if (block_count && nonblock_count) {
+            temp = (block / block_count) / (nonblock / nonblock_count);
+            ret = FFMAX(ret, temp);
+        }
     }
 
     // vertical blockiness (fixed height)
@@ -180,8 +180,10 @@ static float calculate_blockiness(BLKContext *s, int w, int h,
                 nonblock_count++;
             }
         }
-        temp = (block / block_count) / (nonblock / nonblock_count);
-        ret = FFMAX(ret, temp);
+        if (block_count && nonblock_count) {
+            temp = (block / block_count) / (nonblock / nonblock_count);
+            ret = FFMAX(ret, temp);
+        }
     }
 
     // return highest value of horz||vert
@@ -197,6 +199,7 @@ static void set_meta(AVDictionary **metadata, const char *key, float d)
 
 static int blockdetect_filter_frame(AVFilterLink *inlink, AVFrame *in)
 {
+    FilterLink      *inl  = ff_filter_link(inlink);
     AVFilterContext *ctx  = inlink->dst;
     BLKContext *s         = ctx->priv;
     AVFilterLink *outlink = ctx->outputs[0];
@@ -235,7 +238,7 @@ static int blockdetect_filter_frame(AVFilterLink *inlink, AVFrame *in)
 
     set_meta(metadata, "lavfi.block", block);
 
-    s->nb_frames = inlink->frame_count_in;
+    s->nb_frames = inl->frame_count_in;
 
     return ff_filter_frame(outlink, in);
 }
@@ -273,22 +276,14 @@ static const AVFilterPad blockdetect_inputs[] = {
     },
 };
 
-static const AVFilterPad blockdetect_outputs[] = {
-    {
-        .name = "default",
-        .type = AVMEDIA_TYPE_VIDEO,
-    },
-};
-
-const AVFilter ff_vf_blockdetect = {
-    .name          = "blockdetect",
-    .description   = NULL_IF_CONFIG_SMALL("Blockdetect filter."),
+const FFFilter ff_vf_blockdetect = {
+    .p.name        = "blockdetect",
+    .p.description = NULL_IF_CONFIG_SMALL("Blockdetect filter."),
+    .p.priv_class  = &blockdetect_class,
+    .p.flags       = AVFILTER_FLAG_METADATA_ONLY,
     .priv_size     = sizeof(BLKContext),
-    .init          = blockdetect_init,
     .uninit        = blockdetect_uninit,
     FILTER_PIXFMTS_ARRAY(pix_fmts),
     FILTER_INPUTS(blockdetect_inputs),
-    FILTER_OUTPUTS(blockdetect_outputs),
-    .priv_class    = &blockdetect_class,
-    .flags         = AVFILTER_FLAG_METADATA_ONLY,
+    FILTER_OUTPUTS(ff_video_default_filterpad),
 };

@@ -34,9 +34,6 @@ static void imdct36_blocks_ ## CPU(float *out, float *buf, float *in, int count,
 void ff_imdct36_float_ ## CPU(float *out, float *buf, float *in, float *win);
 
 #if HAVE_X86ASM
-#if ARCH_X86_32
-DECL(sse)
-#endif
 DECL(sse2)
 DECL(sse3)
 DECL(ssse3)
@@ -48,9 +45,12 @@ void ff_four_imdct36_float_sse(float *out, float *buf, float *in, float *win,
 void ff_four_imdct36_float_avx(float *out, float *buf, float *in, float *win,
                                float *tmpbuf);
 
+void ff_dct32_float_sse2(float *out, const float *in);
+void ff_dct32_float_avx (float *out, const float *in);
+
 DECLARE_ALIGNED(16, static float, mdct_win_sse)[2][4][4*40];
 
-#if HAVE_6REGS && HAVE_SSE_INLINE
+#if HAVE_X86_6REGS && HAVE_SSE_INLINE
 
 #define MACS(rt, ra, rb) rt+=(ra)*(rb)
 #define MLSS(rt, ra, rb) rt-=(ra)*(rb)
@@ -194,7 +194,7 @@ static void apply_window_mp3(float *in, float *win, int *unused, float *out,
     *out = sum;
 }
 
-#endif /* HAVE_6REGS && HAVE_SSE_INLINE */
+#endif /* HAVE_X86_6REGS && HAVE_SSE_INLINE */
 
 #if HAVE_X86ASM
 #define DECL_IMDCT_BLOCKS(CPU1, CPU2)                                       \
@@ -230,9 +230,6 @@ static void imdct36_blocks_ ## CPU1(float *out, float *buf, float *in,      \
 }
 
 #if HAVE_SSE
-#if ARCH_X86_32
-DECL_IMDCT_BLOCKS(sse,sse)
-#endif
 DECL_IMDCT_BLOCKS(sse2,sse)
 DECL_IMDCT_BLOCKS(sse3,sse)
 DECL_IMDCT_BLOCKS(ssse3,sse)
@@ -263,7 +260,7 @@ av_cold void ff_mpadsp_init_x86(MPADSPContext *s)
 {
     av_unused int cpu_flags = av_get_cpu_flags();
 
-#if HAVE_6REGS && HAVE_SSE_INLINE
+#if HAVE_X86_6REGS && HAVE_SSE_INLINE
     if (INLINE_SSE(cpu_flags)) {
         s->apply_window_float = apply_window_mp3;
     }
@@ -271,13 +268,9 @@ av_cold void ff_mpadsp_init_x86(MPADSPContext *s)
 
 #if HAVE_X86ASM
 #if HAVE_SSE
-#if ARCH_X86_32
-    if (EXTERNAL_SSE(cpu_flags)) {
-        s->imdct36_blocks_float = imdct36_blocks_sse;
-    }
-#endif
     if (EXTERNAL_SSE2(cpu_flags)) {
         s->imdct36_blocks_float = imdct36_blocks_sse2;
+        s->dct32_float          = ff_dct32_float_sse2;
     }
     if (EXTERNAL_SSE3(cpu_flags)) {
         s->imdct36_blocks_float = imdct36_blocks_sse3;
@@ -290,6 +283,8 @@ av_cold void ff_mpadsp_init_x86(MPADSPContext *s)
     if (EXTERNAL_AVX(cpu_flags)) {
         s->imdct36_blocks_float = imdct36_blocks_avx;
     }
+    if (EXTERNAL_AVX_FAST(cpu_flags))
+        s->dct32_float          = ff_dct32_float_avx;
 #endif
 #endif /* HAVE_X86ASM */
 }

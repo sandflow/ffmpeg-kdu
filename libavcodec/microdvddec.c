@@ -26,6 +26,7 @@
  * https://trac.videolan.org/vlc/ticket/1825#comment:6
  */
 
+#include "libavutil/attributes.h"
 #include "libavutil/avstring.h"
 #include "libavutil/parseutils.h"
 #include "libavutil/bprint.h"
@@ -35,7 +36,7 @@
 
 static int indexof(const char *s, int c)
 {
-    char *f = strchr(s, c);
+    const char *f = strchr(s, c);
     return f ? (f - s) : -1;
 }
 
@@ -99,6 +100,7 @@ static char *microdvd_load_tags(struct microdvd_tag *tags, char *s)
         /* Style */
         case 'Y':
             tag.persistent = MICRODVD_PERSISTENT_ON;
+            av_fallthrough;
         case 'y':
             while (*s && *s != '}' && s - start < 256) {
                 int style_index = indexof(MICRODVD_STYLES, *s);
@@ -117,6 +119,7 @@ static char *microdvd_load_tags(struct microdvd_tag *tags, char *s)
         /* Color */
         case 'C':
             tag.persistent = MICRODVD_PERSISTENT_ON;
+            av_fallthrough;
         case 'c':
             while (*s == '$' || *s == '#')
                 s++;
@@ -129,6 +132,7 @@ static char *microdvd_load_tags(struct microdvd_tag *tags, char *s)
         /* Font name */
         case 'F':
             tag.persistent = MICRODVD_PERSISTENT_ON;
+            av_fallthrough;
         case 'f': {
             int len = indexof(s, '}');
             if (len < 0)
@@ -143,6 +147,7 @@ static char *microdvd_load_tags(struct microdvd_tag *tags, char *s)
         /* Font size */
         case 'S':
             tag.persistent = MICRODVD_PERSISTENT_ON;
+            av_fallthrough;
         case 's':
             tag.data1 = strtol(s, &s, 10);
             if (*s != '}')
@@ -319,7 +324,7 @@ static int microdvd_decode_frame(AVCodecContext *avctx, AVSubtitle *sub,
     return avpkt->size;
 }
 
-static int microdvd_init(AVCodecContext *avctx)
+static av_cold int microdvd_init(AVCodecContext *avctx)
 {
     int i, sidx;
     AVBPrint font_buf;
@@ -370,12 +375,11 @@ static int microdvd_init(AVCodecContext *avctx)
 
 const FFCodec ff_microdvd_decoder = {
     .p.name       = "microdvd",
-    .p.long_name  = NULL_IF_CONFIG_SMALL("MicroDVD subtitle"),
+    CODEC_LONG_NAME("MicroDVD subtitle"),
     .p.type       = AVMEDIA_TYPE_SUBTITLE,
     .p.id         = AV_CODEC_ID_MICRODVD,
     .init         = microdvd_init,
     FF_CODEC_DECODE_SUB_CB(microdvd_decode_frame),
     .flush        = ff_ass_decoder_flush,
     .priv_data_size = sizeof(FFASSDecoderContext),
-    .caps_internal  = FF_CODEC_CAP_INIT_THREADSAFE,
 };

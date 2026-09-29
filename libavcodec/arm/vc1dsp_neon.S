@@ -443,17 +443,17 @@ function ff_vc1_inv_trans_8x4_neon, export=1
         @   src[6]   d5
         @   src[7]   d7
 
-        vc1_inv_trans_8x4_helper    add=4, add1beforeshift=0, rshift=3
+        vc1_inv_trans_8x4_helper add=4, add1beforeshift=0, rshift=3
 
         @ Move output to more standardized registers
-        vmov        d0, d16
-        vmov        d2, d17
-        vmov        d4, d18
-        vmov        d6, d19
-        vmov        d1, d21
-        vmov        d3, d20
-        vmov        d5, d23
-        vmov        d7, d22
+        vmov            d0, d16
+        vmov            d2, d17
+        vmov            d4, d18
+        vmov            d6, d19
+        vmov            d1, d21
+        vmov            d3, d20
+        vmov            d5, d23
+        vmov            d7, d22
 
         @ At this point:
         @   dst[0]   d0
@@ -473,7 +473,7 @@ function ff_vc1_inv_trans_8x4_neon, export=1
         @   row[2] q2
         @   row[3] q3
 
-        vc1_inv_trans_4x8_helper    add=64, rshift=7
+        vc1_inv_trans_4x8_helper add=64, rshift=7
 
         @ At this point:
         @   line[0].l   d0
@@ -523,7 +523,7 @@ function ff_vc1_inv_trans_4x8_neon, export=1
         vld4.16         {d1[2], d3[2], d5[2], d7[2]}, [r2,:64], r12
         vld4.16         {d1[3], d3[3], d5[3], d7[3]}, [r2,:64]
 
-        vc1_inv_trans_4x8_helper    add=4, rshift=3
+        vc1_inv_trans_4x8_helper add=4, rshift=3
 
         @ At this point:
         @   dst[0] = q0
@@ -533,7 +533,7 @@ function ff_vc1_inv_trans_4x8_neon, export=1
 
         transpose16     q0, q1, q2, q3  @ Transpose rows (registers) into columns
 
-        vc1_inv_trans_8x4_helper    add=64, add1beforeshift=1, rshift=7
+        vc1_inv_trans_8x4_helper add=64, add1beforeshift=1, rshift=7
 
         vld1.32         {d28[]},  [r0,:32], r1  @ read dest
         vld1.32         {d28[1]}, [r0,:32], r1
@@ -1310,17 +1310,17 @@ endfunc
 function ff_vc1_v_loop_filter8_neon, export=1
         sub             r3, r0, r1, lsl #2
         vldr            d0, .Lcoeffs
-        vld1.32         {d1}, [r0 :64], r1      @ P5
-        vld1.32         {d2}, [r3 :64], r1      @ P1
-        vld1.32         {d3}, [r3 :64], r1      @ P2
-        vld1.32         {d4}, [r0 :64], r1      @ P6
-        vld1.32         {d5}, [r3 :64], r1      @ P3
-        vld1.32         {d6}, [r0 :64], r1      @ P7
+        vld1.32         {d1}, [r0, :64], r1     @ P5
+        vld1.32         {d2}, [r3, :64], r1     @ P1
+        vld1.32         {d3}, [r3, :64], r1     @ P2
+        vld1.32         {d4}, [r0, :64], r1     @ P6
+        vld1.32         {d5}, [r3, :64], r1     @ P3
+        vld1.32         {d6}, [r0, :64], r1     @ P7
         vshll.u8        q8, d1, #1              @ 2*P5
         vshll.u8        q9, d2, #1              @ 2*P1
-        vld1.32         {d7}, [r3 :64]          @ P4
+        vld1.32         {d7}, [r3, :64]         @ P4
         vmovl.u8        q1, d3                  @ P2
-        vld1.32         {d20}, [r0 :64]         @ P8
+        vld1.32         {d20}, [r0, :64]        @ P8
         vmovl.u8        q11, d4                 @ P6
         vdup.16         q12, r2                 @ pq
         vmovl.u8        q13, d5                 @ P3
@@ -1375,8 +1375,8 @@ function ff_vc1_v_loop_filter8_neon, export=1
         vmla.i16        q1, q0, q2              @ invert d depending on clip_sign & a0_sign, or zero it if they match, and accumulate into P5
         vqmovun.s16     d0, q3
         vqmovun.s16     d1, q1
-        vst1.32         {d0}, [r3 :64], r1
-        vst1.32         {d1}, [r3 :64]
+        vst1.32         {d0}, [r3, :64], r1
+        vst1.32         {d1}, [r3, :64]
 1:      bx              lr
 endfunc
 
@@ -1491,17 +1491,17 @@ function ff_vc1_v_loop_filter16_neon, export=1
         vpush           {d8-d15}
         sub             r3, r0, r1, lsl #2
         vldr            d0, .Lcoeffs
-        vld1.64         {q1}, [r0 :128], r1     @ P5
-        vld1.64         {q2}, [r3 :128], r1     @ P1
-        vld1.64         {q3}, [r3 :128], r1     @ P2
-        vld1.64         {q4}, [r0 :128], r1     @ P6
-        vld1.64         {q5}, [r3 :128], r1     @ P3
-        vld1.64         {q6}, [r0 :128], r1     @ P7
+        vld1.64         {q1}, [r0, :128], r1    @ P5
+        vld1.64         {q2}, [r3, :128], r1    @ P1
+        vld1.64         {q3}, [r3, :128], r1    @ P2
+        vld1.64         {q4}, [r0, :128], r1    @ P6
+        vld1.64         {q5}, [r3, :128], r1    @ P3
+        vld1.64         {q6}, [r0, :128], r1    @ P7
         vshll.u8        q7, d2, #1              @ 2*P5[0..7]
         vshll.u8        q8, d4, #1              @ 2*P1[0..7]
-        vld1.64         {q9}, [r3 :128]         @ P4
+        vld1.64         {q9}, [r3, :128]        @ P4
         vmovl.u8        q10, d6                 @ P2[0..7]
-        vld1.64         {q11}, [r0 :128]        @ P8
+        vld1.64         {q11}, [r0, :128]       @ P8
         vmovl.u8        q12, d8                 @ P6[0..7]
         vdup.16         q13, r2                 @ pq
         vshll.u8        q2, d5, #1              @ 2*P1[8..15]
@@ -1611,8 +1611,8 @@ function ff_vc1_v_loop_filter16_neon, export=1
         vqmovun.s16     d0, q6
         vqmovun.s16     d5, q9
         vqmovun.s16     d1, q1
-        vst1.64         {q2}, [r3 :128], r1
-        vst1.64         {q0}, [r3 :128]
+        vst1.64         {q2}, [r3, :128], r1
+        vst1.64         {q0}, [r3, :128]
 1:      vpop            {d8-d15}
         bx              lr
 endfunc
@@ -1817,8 +1817,8 @@ function ff_vc1_unescape_buffer_helper_neon, export=1
         @ Offset by 48 to screen out cases that are too short for us to handle,
         @ and also make it easy to test for loop termination, or to determine
         @ whether we need an odd number of half-iterations of the loop.
-        subs    r1, r1, #48
-        bmi     90f
+        subs            r1, r1, #48
+        bmi             90f
 
         @ Set up useful constants
         vmov.i32        q0, #0x3000000

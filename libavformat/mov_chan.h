@@ -163,4 +163,27 @@ int ff_mov_get_channel_layout_tag(const AVCodecParameters *par,
 int ff_mov_read_chan(AVFormatContext *s, AVIOContext *pb, AVStream *st,
                      int64_t size);
 
+/**
+ * Get ISO/IEC 23001-8 ChannelConfiguration from AVChannelLayout.
+ *
+ */
+int ff_mov_get_channel_config_from_layout(const AVChannelLayout *layout, int *config);
+
+/**
+ * Get ISO/IEC 23001-8 OutputChannelPosition from AVChannelLayout.
+ */
+int ff_mov_get_channel_positions_from_layout(const AVChannelLayout *layout,
+                                             uint8_t *position, int position_num);
+
+/**
+ * Read 'chnl' tag from the input stream.
+ *
+ * @param s     AVFormatContext
+ * @param pb    AVIOContext
+ * @param st    The stream to set codec values for
+ * @param version Version of the tag
+ * @return      0 if ok, or negative AVERROR code on failure
+ */
+int ff_mov_read_chnl(AVFormatContext *s, AVIOContext *pb, AVStream *st, int version);
+
 #endif /* AVFORMAT_MOV_CHAN_H */

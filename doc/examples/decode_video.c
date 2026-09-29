@@ -21,10 +21,11 @@
  */
 
 /**
- * @file
- * video decoding with libavcodec API example
+ * @file libavcodec video decoding API usage example
+ * @example decode_video.c *
  *
- * @example decode_video.c
+ * Read from an MPEG1 video file, decode frames, and generate PGM images as
+ * output.
  */
 
 #include <stdio.h>
@@ -41,7 +42,11 @@ static void pgm_save(unsigned char *buf, int wrap, int xsize, int ysize,
     FILE *f;
     int i;
 
-    f = fopen(filename,"wb");
+    f = fopen(filename, "wb");
+    if (!f) {
+        fprintf(stderr, "Could not open %s\n", filename);
+        return;
+    }
     fprintf(f, "P5\n%d %d\n%d\n", xsize, ysize, 255);
     for (i = 0; i < ysize; i++)
         fwrite(buf + i * wrap, 1, xsize, f);
@@ -69,12 +74,12 @@ static void decode(AVCodecContext *dec_ctx, AVFrame *frame, AVPacket *pkt,
             exit(1);
         }
 
-        printf("saving frame %3d\n", dec_ctx->frame_number);
+        printf("saving frame %3"PRId64"\n", dec_ctx->frame_num);
         fflush(stdout);
 
         /* the picture is allocated by the decoder. no need to
            free it */
-        snprintf(buf, sizeof(buf), "%s-%d", filename, dec_ctx->frame_number);
+        snprintf(buf, sizeof(buf), "%s-%"PRId64, filename, dec_ctx->frame_num);
         pgm_save(frame->data[0], frame->linesize[0],
                  frame->width, frame->height, buf);
     }
