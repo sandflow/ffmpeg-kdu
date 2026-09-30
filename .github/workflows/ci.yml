@@ -78,8 +78,8 @@ jobs:
             --disable-doc \
             --disable-programs \
             --enable-ffmpeg \
-            --enable-decoder=rawvideo,tiff \
-            --enable-encoder=rawvideo,tiff,wrapped_avframe \
+            --enable-decoder=libkdu,rawvideo,tiff \
+            --enable-encoder=libkdu,rawvideo,tiff,wrapped_avframe \
             --enable-demuxer=image2,rawvideo \
             --enable-muxer=image2,rawvideo,null \
             --enable-protocol=file \
