@@ -46,7 +46,10 @@ jobs:
       - name: Build Kakadu SDK static libraries
         env:
           KDU_STATIC_BUILD: "1"
-        run: make -C "$KDU_SDK_DIR/make" -f "Makefile-$KDU_PLATFORM" all_but_jni
+        run: |
+          # Builds only libkdu.a and libkdu_aux.a
+          make -C "$KDU_SDK_DIR/coresys/make" -f "Makefile-$KDU_PLATFORM" all -j"$(nproc)"
+          make -C "$KDU_SDK_DIR/managed/make" -f "Makefile-$KDU_PLATFORM" libkdu_aux.a -j"$(nproc)"
 
       - name: Check out kduc
         uses: actions/checkout@v4
@@ -67,9 +70,19 @@ jobs:
           cmake --build kduc-build -j"$(nproc)"
           cmake --install kduc-build
 
-      - name: Configure ffmpeg-kdu
+      - name: Minimum ffmpeg-kdu build
         run: |
           ./configure --enable-libkdu \
+            --disable-everything \
+            --disable-doc \
+            --disable-programs \
+            --enable-ffmpeg \
+            --enable-decoder=rawvideo,tiff \
+            --enable-encoder=rawvideo,tiff,wrapped_avframe \
+            --enable-demuxer=image2,rawvideo \
+            --enable-muxer=image2,rawvideo,null \
+            --enable-protocol=file \
+            --enable-filter=psnr \
             --extra-cflags="-I$KDUC_INSTALL_DIR/include" \
             --extra-ldflags="-L$KDUC_INSTALL_DIR/lib -L$GITHUB_WORKSPACE/$KDU_SDK_DIR/lib/$KDU_PLATFORM"
 
