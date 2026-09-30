@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches: [integration-master]
+  pull_request:
+    branches: [integration-master]
+
+# Required so the job can request a GitHub OIDC token to assume the AWS role.
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  # Repository (or org) variables -- see .github/README.md for setup notes.
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  KDU_SDK_S3_URI: ${{ vars.KDU_SDK_S3_URI }}
+  KDU_PLATFORM: Linux-x86-64-gcc
+  KDUC_INSTALL_DIR: ${{ github.workspace }}/install-kduc
+  TEST_IMG_DIR: ${{ github.workspace }}/test-images
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out ffmpeg-kdu
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm
+
+      - name: Assume AWS role via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Fetch Kakadu SDK from S3
+        run: |
+          aws s3 cp "$KDU_SDK_S3_URI" kdu-sdk.zip
+          unzip -q kdu-sdk.zip
+          echo "KDU_SDK_DIR=$(unzip -Z1 kdu-sdk.zip | head -1 | cut -d/ -f1)" >> "$GITHUB_ENV"
+
+      - name: Build Kakadu SDK static libraries
+        env:
+          KDU_STATIC_BUILD: "1"
+        run: |
+          # Builds only libkdu.a and libkdu_aux.a
+          make -C "$KDU_SDK_DIR/coresys/make" -f "Makefile-$KDU_PLATFORM" all -j"$(nproc)"
+          make -C "$KDU_SDK_DIR/managed/make" -f "Makefile-$KDU_PLATFORM" kdu_hyperdoc
+          make -C "$KDU_SDK_DIR/managed/make" -f "Makefile-$KDU_PLATFORM" libkdu_aux.a -j"$(nproc)"
+
+      - name: Check out kduc
+        uses: actions/checkout@v4
+        with:
+          repository: sandflow/kduc
+          path: kduc
+
+      - name: Configure kduc
+        run: |
+          cmake -S kduc -B kduc-build \
+            -DKDU_LIBRARY="$GITHUB_WORKSPACE/$KDU_SDK_DIR/lib/$KDU_PLATFORM/libkdu.a" \
+            -DKDU_AUX_LIBRARY="$GITHUB_WORKSPACE/$KDU_SDK_DIR/lib/$KDU_PLATFORM/libkdu_aux.a" \
+            -DKDU_INCLUDE_DIR="$GITHUB_WORKSPACE/$KDU_SDK_DIR/managed/all_includes" \
+            -DCMAKE_INSTALL_PREFIX="$KDUC_INSTALL_DIR"
+
+      - name: Build and install kduc
+        run: |
+          cmake --build kduc-build -j"$(nproc)"
+          cmake --install kduc-build
+
+      - name: Minimum ffmpeg-kdu build
+        run: |
+          ./configure --enable-libkdu \
+            --disable-everything \
+            --disable-doc \
+            --disable-programs \
+            --enable-ffmpeg \
+            --enable-decoder=libkdu,rawvideo,tiff \
+            --enable-encoder=libkdu,rawvideo,tiff,wrapped_avframe \
+            --enable-demuxer=image2,rawvideo \
+            --enable-muxer=image2,rawvideo,null \
+            --enable-protocol=file \
+            --enable-filter=psnr,scale \
+            --extra-cflags="-I$KDUC_INSTALL_DIR/include" \
+            --extra-ldflags="-L$KDUC_INSTALL_DIR/lib -L$GITHUB_WORKSPACE/$KDU_SDK_DIR/lib/$KDU_PLATFORM"
+
+      - name: Build ffmpeg-kdu
+        run: make -j"$(nproc)"
+
+      - name: Fetch test images from S3
+        run: |
+          mkdir -p "$TEST_IMG_DIR"
+          aws s3 cp --recursive s3://ffmpeg-kdu/tests/ "$TEST_IMG_DIR"
+
+      - name: Run smoke tests
+        env:
+          LD_LIBRARY_PATH: ${{ env.KDUC_INSTALL_DIR }}/lib
+        run: sh ./.github/tests.sh "$TEST_IMG_DIR"
