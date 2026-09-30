@@ -9,6 +9,17 @@ BUILD_DIR=${2:-build}/test-output
 FFMPEG_CMD="./ffmpeg -y -hide_banner -loglevel error"
 KDU_COMPRESS_CMD="kdu_compress -quiet -num_threads 0"
 
+set -e
+
+# psnr <ffmpeg input args>: prints the PSNR summary, fails if ffmpeg fails
+psnr () {
+  if ! psnr_out=$(./ffmpeg -hide_banner "$@" -lavfi psnr -f null - 2>&1); then
+    echo "${psnr_out}"
+    return 1
+  fi
+  echo "${psnr_out}" | grep 'Parsed_psnr_0.*average:'
+}
+
 tiff_test () {
   test_name=$1
   source_name=$2
@@ -29,7 +40,7 @@ tiff_test () {
 
   ${FFMPEG_CMD} -i ${in_path} -c:v libkdu -rate 1 ${j2c_lossy_path}
   ${FFMPEG_CMD} -c:v libkdu -i ${j2c_lossy_path} ${lossy_path}
-  ./ffmpeg -hide_banner -i ${lossy_path} -i ${lossless_path}  -lavfi psnr -f null - 2>&1 | grep Parsed_psnr_0
+  psnr -i ${lossy_path} -i ${lossless_path}
 }
 
 yuv_test () {
@@ -55,7 +66,7 @@ yuv_test () {
 
   ${FFMPEG_CMD} ${yuv_params} -i ${in_path} -c:v libkdu -rate 1 ${j2c_lossy_path}
   ${FFMPEG_CMD} -c:v libkdu -i ${j2c_lossy_path} ${yuv_params} ${lossy_path}
-  ./ffmpeg -hide_banner ${yuv_params} -i ${lossy_path} ${yuv_params} -i ${lossless_path}  -lavfi psnr -f null - 2>&1 | grep Parsed_psnr_0
+  psnr ${yuv_params} -i ${lossy_path} ${yuv_params} -i ${lossless_path}
 }
 
 mkdir -p ${BUILD_DIR}

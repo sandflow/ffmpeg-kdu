@@ -83,7 +83,7 @@ jobs:
             --enable-demuxer=image2,rawvideo \
             --enable-muxer=image2,rawvideo,null \
             --enable-protocol=file \
-            --enable-filter=psnr \
+            --enable-filter=psnr,scale \
             --extra-cflags="-I$KDUC_INSTALL_DIR/include" \
             --extra-ldflags="-L$KDUC_INSTALL_DIR/lib -L$GITHUB_WORKSPACE/$KDU_SDK_DIR/lib/$KDU_PLATFORM"
 
