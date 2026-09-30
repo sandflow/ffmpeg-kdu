@@ -49,6 +49,7 @@ jobs:
         run: |
           # Builds only libkdu.a and libkdu_aux.a
           make -C "$KDU_SDK_DIR/coresys/make" -f "Makefile-$KDU_PLATFORM" all -j"$(nproc)"
+          make -C "$KDU_SDK_DIR/managed/make" -f "Makefile-$KDU_PLATFORM" kdu_hyperdoc
           make -C "$KDU_SDK_DIR/managed/make" -f "Makefile-$KDU_PLATFORM" libkdu_aux.a -j"$(nproc)"
 
       - name: Check out kduc
